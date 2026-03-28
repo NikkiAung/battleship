@@ -1,0 +1,17 @@
+.wallet-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wallet-connected {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.wallet-address {
+  font-family: monospace;
+  font-size: 14px;
+  color: #888;
+}

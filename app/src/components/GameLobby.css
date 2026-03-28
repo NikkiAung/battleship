@@ -1,0 +1,107 @@
+.game-lobby {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  padding: 48px;
+}
+
+.game-lobby h1 {
+  font-size: 48px;
+  color: #fff;
+  margin: 0;
+}
+
+.subtitle {
+  color: #888;
+  margin: 0;
+  font-size: 16px;
+}
+
+.wallet-section {
+  margin: 16px 0;
+}
+
+.lobby-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  margin-top: 24px;
+}
+
+.action-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.action-section h3 {
+  color: #ccc;
+  margin: 0;
+}
+
+.divider {
+  color: #666;
+  font-size: 14px;
+}
+
+.game-id-input {
+  padding: 12px 16px;
+  font-size: 16px;
+  border: 2px solid #3d3d5c;
+  border-radius: 6px;
+  background: #1a1a2e;
+  color: #fff;
+  width: 280px;
+  text-align: center;
+}
+
+.game-id-input:focus {
+  outline: none;
+  border-color: #3498db;
+}
+
+.game-id-input:disabled {
+  opacity: 0.5;
+}
+
+.connect-prompt {
+  color: #888;
+  font-style: italic;
+}
+
+.btn {
+  padding: 12px 24px;
+  border-radius: 6px;
+  border: none;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 160px;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: #27ae60;
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #2ecc71;
+}
+
+.btn-secondary {
+  background: #3498db;
+  color: white;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: #5dade2;
+}

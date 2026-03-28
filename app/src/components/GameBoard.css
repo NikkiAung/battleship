@@ -1,0 +1,87 @@
+.game-board {
+  display: inline-block;
+  background: #1a1a2e;
+  padding: 8px;
+  border-radius: 8px;
+  border: 2px solid #3d3d5c;
+}
+
+.board-row {
+  display: flex;
+}
+
+.header-row {
+  margin-bottom: 2px;
+}
+
+.header-cell {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: bold;
+  color: #888;
+}
+
+.header-cell.corner {
+  background: transparent;
+}
+
+.cell {
+  width: 36px;
+  height: 36px;
+  background: #16213e;
+  border: 1px solid #2d3a5a;
+  margin: 1px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.cell.clickable {
+  cursor: pointer;
+}
+
+.cell.clickable:hover {
+  background: #1f4068;
+  transform: scale(1.05);
+}
+
+.cell.ship {
+  background: #3498db;
+  border-color: #2980b9;
+}
+
+.cell.hit {
+  background: #e74c3c;
+  border-color: #c0392b;
+}
+
+.cell.hit::after {
+  content: "X";
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: white;
+  font-weight: bold;
+  font-size: 18px;
+}
+
+.cell.miss {
+  background: #2c3e50;
+  border-color: #34495e;
+}
+
+.cell.miss::after {
+  content: "•";
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: #7f8c8d;
+  font-size: 24px;
+}

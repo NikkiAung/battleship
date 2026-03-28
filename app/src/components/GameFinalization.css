@@ -1,0 +1,73 @@
+.game-finalization {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+  padding: 48px;
+}
+
+.result-banner h1 {
+  font-size: 64px;
+  margin: 0;
+}
+
+.victory {
+  color: #27ae60;
+  text-shadow: 0 0 20px rgba(39, 174, 96, 0.5);
+}
+
+.defeat {
+  color: #e74c3c;
+  text-shadow: 0 0 20px rgba(231, 76, 60, 0.5);
+}
+
+.winner-info {
+  text-align: center;
+}
+
+.winner-info p {
+  color: #888;
+  margin: 0 0 8px 0;
+}
+
+.winner-address {
+  background: #1a1a2e;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  color: #3498db;
+}
+
+.finalization-actions {
+  display: flex;
+  gap: 16px;
+}
+
+.btn {
+  padding: 12px 24px;
+  border-radius: 6px;
+  border: none;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 140px;
+}
+
+.btn-primary {
+  background: #27ae60;
+  color: white;
+}
+
+.btn-primary:hover {
+  background: #2ecc71;
+}
+
+.btn-secondary {
+  background: #3498db;
+  color: white;
+}
+
+.btn-secondary:hover {
+  background: #5dade2;
+}

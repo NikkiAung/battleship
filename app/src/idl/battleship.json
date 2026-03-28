@@ -1,0 +1,978 @@
+{
+  "address": "8tX8EQWsszJhLvbjws2cechrWR9MVxBG4sb3iTU2coJY",
+  "metadata": {
+    "name": "battleship",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "instructions": [
+    {
+      "name": "auto_place_ships",
+      "discriminator": [
+        129,
+        197,
+        27,
+        234,
+        125,
+        116,
+        84,
+        212
+      ],
+      "accounts": [
+        {
+          "name": "player_board",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  108,
+                  97,
+                  121,
+                  101,
+                  114,
+                  95,
+                  98,
+                  111,
+                  97,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "game_id"
+              },
+              {
+                "kind": "account",
+                "path": "player"
+              }
+            ]
+          }
+        },
+        {
+          "name": "player",
+          "writable": true,
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "_game_id",
+          "type": "u64"
+        },
+        {
+          "name": "encrypted_grid",
+          "type": {
+            "array": [
+              "u8",
+              112
+            ]
+          }
+        },
+        {
+          "name": "grid_commitment",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "check_winner",
+      "discriminator": [
+        246,
+        195,
+        208,
+        54,
+        162,
+        217,
+        84,
+        64
+      ],
+      "accounts": [
+        {
+          "name": "game_session",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  97,
+                  109,
+                  101,
+                  95,
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "game_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "board_one"
+        },
+        {
+          "name": "board_two"
+        }
+      ],
+      "args": [
+        {
+          "name": "_game_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "delegate_to_er",
+      "discriminator": [
+        167,
+        89,
+        86,
+        75,
+        30,
+        83,
+        195,
+        239
+      ],
+      "accounts": [
+        {
+          "name": "buffer_game_session",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  117,
+                  102,
+                  102,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game_session"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                117,
+                52,
+                125,
+                232,
+                70,
+                88,
+                249,
+                47,
+                78,
+                236,
+                80,
+                67,
+                35,
+                139,
+                246,
+                217,
+                192,
+                246,
+                247,
+                122,
+                34,
+                226,
+                151,
+                233,
+                205,
+                133,
+                137,
+                100,
+                55,
+                249,
+                255,
+                217
+              ]
+            }
+          }
+        },
+        {
+          "name": "delegation_record_game_session",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game_session"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "delegation_program"
+            }
+          }
+        },
+        {
+          "name": "delegation_metadata_game_session",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110,
+                  45,
+                  109,
+                  101,
+                  116,
+                  97,
+                  100,
+                  97,
+                  116,
+                  97
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game_session"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "delegation_program"
+            }
+          }
+        },
+        {
+          "name": "game_session",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  97,
+                  109,
+                  101,
+                  95,
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "game_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "signer": true
+        },
+        {
+          "name": "owner_program",
+          "address": "8tX8EQWsszJhLvbjws2cechrWR9MVxBG4sb3iTU2coJY"
+        },
+        {
+          "name": "delegation_program",
+          "address": "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "game_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "finalize_game",
+      "discriminator": [
+        203,
+        227,
+        3,
+        167,
+        186,
+        102,
+        76,
+        10
+      ],
+      "accounts": [
+        {
+          "name": "game_session",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  97,
+                  109,
+                  101,
+                  95,
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "game_id"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "_game_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "initialize_game",
+      "discriminator": [
+        44,
+        62,
+        102,
+        247,
+        126,
+        208,
+        130,
+        215
+      ],
+      "accounts": [
+        {
+          "name": "game_session",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  97,
+                  109,
+                  101,
+                  95,
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "game_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "player_one",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "game_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "initialize_player_board",
+      "discriminator": [
+        18,
+        202,
+        196,
+        248,
+        238,
+        142,
+        79,
+        132
+      ],
+      "accounts": [
+        {
+          "name": "game_session",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  97,
+                  109,
+                  101,
+                  95,
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "game_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "player_board",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  108,
+                  97,
+                  121,
+                  101,
+                  114,
+                  95,
+                  98,
+                  111,
+                  97,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "game_id"
+              },
+              {
+                "kind": "account",
+                "path": "player"
+              }
+            ]
+          }
+        },
+        {
+          "name": "player",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "game_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "process_attack",
+      "discriminator": [
+        109,
+        137,
+        169,
+        15,
+        252,
+        107,
+        171,
+        35
+      ],
+      "accounts": [
+        {
+          "name": "game_session",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  97,
+                  109,
+                  101,
+                  95,
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "game_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "target_board",
+          "writable": true
+        },
+        {
+          "name": "attacker",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "_game_id",
+          "type": "u64"
+        },
+        {
+          "name": "cell",
+          "type": "u8"
+        },
+        {
+          "name": "is_hit",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "process_undelegation",
+      "discriminator": [
+        196,
+        28,
+        41,
+        206,
+        48,
+        37,
+        51,
+        167
+      ],
+      "accounts": [
+        {
+          "name": "base_account",
+          "writable": true
+        },
+        {
+          "name": "buffer"
+        },
+        {
+          "name": "payer",
+          "writable": true
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "account_seeds",
+          "type": {
+            "vec": "bytes"
+          }
+        }
+      ]
+    },
+    {
+      "name": "undelegate_from_er",
+      "discriminator": [
+        92,
+        142,
+        113,
+        192,
+        137,
+        138,
+        248,
+        246
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "game_session",
+          "writable": true
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "magic_context",
+          "writable": true,
+          "address": "MagicContext1111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "GameSession",
+      "discriminator": [
+        150,
+        116,
+        20,
+        197,
+        205,
+        121,
+        220,
+        240
+      ]
+    },
+    {
+      "name": "PlayerBoard",
+      "discriminator": [
+        120,
+        6,
+        158,
+        230,
+        127,
+        175,
+        86,
+        173
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "AttackProcessed",
+      "discriminator": [
+        254,
+        180,
+        196,
+        184,
+        95,
+        31,
+        238,
+        239
+      ]
+    },
+    {
+      "name": "GameFinalized",
+      "discriminator": [
+        29,
+        161,
+        173,
+        86,
+        207,
+        34,
+        220,
+        48
+      ]
+    },
+    {
+      "name": "GameInitialized",
+      "discriminator": [
+        82,
+        221,
+        11,
+        2,
+        244,
+        52,
+        240,
+        250
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "GameAlreadyStarted",
+      "msg": "game has already started"
+    },
+    {
+      "code": 6001,
+      "name": "GameNotInitialized",
+      "msg": "game is not in the initialized state"
+    },
+    {
+      "code": 6002,
+      "name": "GameNotInProgress",
+      "msg": "game is not in progress"
+    },
+    {
+      "code": 6003,
+      "name": "GameFull",
+      "msg": "game is already full"
+    },
+    {
+      "code": 6004,
+      "name": "GameAlreadyFinished",
+      "msg": "game is already finished"
+    },
+    {
+      "code": 6005,
+      "name": "NotYourTurn",
+      "msg": "it is not your turn"
+    },
+    {
+      "code": 6006,
+      "name": "Unauthorized",
+      "msg": "you are not authorized to perform this action"
+    },
+    {
+      "code": 6007,
+      "name": "ShipsAlreadyPlaced",
+      "msg": "ships have already been placed on this board"
+    },
+    {
+      "code": 6008,
+      "name": "ShipsNotPlaced",
+      "msg": "ships have not been placed by both players yet"
+    },
+    {
+      "code": 6009,
+      "name": "InvalidShipPlacement",
+      "msg": "invalid ship placement"
+    },
+    {
+      "code": 6010,
+      "name": "InvalidCoordinate",
+      "msg": "invalid coordinate, must be 0-99"
+    },
+    {
+      "code": 6011,
+      "name": "CellAlreadyAttacked",
+      "msg": "this cell has already been attacked"
+    }
+  ],
+  "types": [
+    {
+      "name": "AttackProcessed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "game_id",
+            "type": "u64"
+          },
+          {
+            "name": "attacker",
+            "type": "pubkey"
+          },
+          {
+            "name": "cell",
+            "type": "u8"
+          },
+          {
+            "name": "hit",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "GameFinalized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "game_id",
+            "type": "u64"
+          },
+          {
+            "name": "winner",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "GameInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "game_id",
+            "type": "u64"
+          },
+          {
+            "name": "player_one",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "GameSession",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "game_id",
+            "type": "u64"
+          },
+          {
+            "name": "player_one",
+            "type": "pubkey"
+          },
+          {
+            "name": "player_two",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "current_turn",
+            "type": "pubkey"
+          },
+          {
+            "name": "game_state",
+            "type": {
+              "defined": {
+                "name": "GameState"
+              }
+            }
+          },
+          {
+            "name": "winner",
+            "type": {
+              "option": "pubkey"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "GameState",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Initialized"
+          },
+          {
+            "name": "ShipsPlaced"
+          },
+          {
+            "name": "InProgress"
+          },
+          {
+            "name": "Finished"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PlayerBoard",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "game_id",
+            "type": "u64"
+          },
+          {
+            "name": "player",
+            "type": "pubkey"
+          },
+          {
+            "name": "grid_commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "cell_states",
+            "type": {
+              "array": [
+                "u8",
+                100
+              ]
+            }
+          },
+          {
+            "name": "hits_received",
+            "type": "u8"
+          },
+          {
+            "name": "ship_grid_encrypted",
+            "type": {
+              "array": [
+                "u8",
+                112
+              ]
+            }
+          },
+          {
+            "name": "ships_placed",
+            "type": "bool"
+          }
+        ]
+      }
+    }
+  ]
+}
