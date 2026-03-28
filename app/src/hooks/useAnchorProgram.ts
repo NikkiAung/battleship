@@ -1,7 +1,8 @@
 import { useMemo } from "react";
-import { useConnection, useAnchorWallet } from "@solana/wallet-adapter-react";
+import { useAnchorWallet } from "@solana/wallet-adapter-react";
 import { Program, AnchorProvider, type Idl, BN } from "@coral-xyz/anchor";
-import { PublicKey } from "@solana/web3.js";
+import { Connection, PublicKey, clusterApiUrl } from "@solana/web3.js";
+import { ConnectionMagicRouter } from "@magicblock-labs/ephemeral-rollups-sdk";
 import idl from "../idl/battleship.json";
 import {
   PROGRAM_ID,
@@ -9,26 +10,54 @@ import {
   PLAYER_BOARD_SEED,
 } from "../idl/battleship";
 
-// hook to get anchor program instance
+// magicblock er endpoint
+const ER_ENDPOINT = "https://devnet.magicblock.app";
+
 export const useAnchorProgram = () => {
-  const { connection } = useConnection();
   const wallet = useAnchorWallet();
 
   const programId = useMemo(() => new PublicKey(PROGRAM_ID), []);
 
-  const provider = useMemo(() => {
+  // standard L1 connection for init/placement (accounts don't exist yet)
+  const l1Connection = useMemo(
+    () => new Connection(clusterApiUrl("devnet"), "confirmed"),
+    []
+  );
+
+  // magic router for gameplay txs (auto-routes L1/ER based on delegation)
+  const magicConnection = useMemo(
+    () => new ConnectionMagicRouter(ER_ENDPOINT, { commitment: "confirmed" }),
+    []
+  );
+
+  // L1 provider + program for init operations
+  const l1Provider = useMemo(() => {
     if (!wallet) return null;
-    return new AnchorProvider(connection, wallet, {
+    return new AnchorProvider(l1Connection, wallet, {
       commitment: "confirmed",
+      skipPreflight: true,
     });
-  }, [connection, wallet]);
+  }, [l1Connection, wallet]);
 
-  const program = useMemo(() => {
-    if (!provider) return null;
-    return new Program(idl as Idl, provider);
-  }, [provider]);
+  const l1Program = useMemo(() => {
+    if (!l1Provider) return null;
+    return new Program(idl as Idl, l1Provider);
+  }, [l1Provider]);
 
-  // derive game session pda from u64 game_id
+  // magic router provider + program for gameplay (after delegation)
+  const erProvider = useMemo(() => {
+    if (!wallet) return null;
+    return new AnchorProvider(magicConnection, wallet, {
+      commitment: "confirmed",
+      skipPreflight: true,
+    });
+  }, [magicConnection, wallet]);
+
+  const erProgram = useMemo(() => {
+    if (!erProvider) return null;
+    return new Program(idl as Idl, erProvider);
+  }, [erProvider]);
+
   const getGameSessionPda = (gameId: BN) => {
     return PublicKey.findProgramAddressSync(
       [Buffer.from(GAME_SESSION_SEED), gameId.toArrayLike(Buffer, "le", 8)],
@@ -36,7 +65,6 @@ export const useAnchorProgram = () => {
     );
   };
 
-  // derive player board pda from u64 game_id and player pubkey
   const getPlayerBoardPda = (gameId: BN, player: PublicKey) => {
     return PublicKey.findProgramAddressSync(
       [
@@ -49,8 +77,10 @@ export const useAnchorProgram = () => {
   };
 
   return {
-    program,
-    provider,
+    l1Program, // for init, placement, startGame, finalize (L1 ops)
+    erProgram, // for processAttack, checkWinner (routed via MagicRouter)
+    l1Connection, // raw L1 connection for delegation txs
+    magicConnection, // for commit+undelegate
     programId,
     getGameSessionPda,
     getPlayerBoardPda,

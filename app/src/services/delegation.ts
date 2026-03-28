@@ -1,8 +1,7 @@
-// er delegation lifecycle manager
-// handles delegate → gameplay in ER → commit+undelegate back to L1
+// er delegation — delegate accounts to ER, commit+undelegate back to L1
 
 import { Connection, PublicKey, Transaction } from "@solana/web3.js";
-import { AnchorProvider, type Program, type Idl, BN } from "@coral-xyz/anchor";
+import { type Program, type Idl, BN } from "@coral-xyz/anchor";
 import {
   createDelegateInstruction,
   createCommitAndUndelegateInstruction,
@@ -13,33 +12,7 @@ import {
   PLAYER_BOARD_SEED,
 } from "../idl/battleship";
 
-// magicblock er endpoint for devnet
-const ER_ENDPOINT = "https://devnet.magicblock.app";
-
 const programId = new PublicKey(PROGRAM_ID);
-
-// get the ER connection for sending gameplay txs directly
-export function getErConnection(): Connection {
-  return new Connection(ER_ENDPOINT, "confirmed");
-}
-
-// create an AnchorProvider pointed at the ER endpoint
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createErProvider(wallet: any): AnchorProvider {
-  const erConnection = getErConnection();
-  return new AnchorProvider(erConnection, wallet, {
-    commitment: "confirmed",
-    skipPreflight: true,
-  });
-}
-
-// derive pda helpers
-function gameSessionPda(gameId: BN): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from(GAME_SESSION_SEED), gameId.toArrayLike(Buffer, "le", 8)],
-    programId
-  );
-}
 
 function playerBoardPda(gameId: BN, player: PublicKey): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
@@ -52,8 +25,14 @@ function playerBoardPda(gameId: BN, player: PublicKey): [PublicKey, number] {
   );
 }
 
-// delegate the game_session account to the ER validator
-// uses the anchor program's delegate_to_er instruction which has #[delegate] macro
+function gameSessionPda(gameId: BN): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from(GAME_SESSION_SEED), gameId.toArrayLike(Buffer, "le", 8)],
+    programId
+  );
+}
+
+// delegate game_session via anchor program's #[delegate] instruction
 export async function delegateGameSession(
   program: Program<Idl>,
   payer: PublicKey,
@@ -65,11 +44,11 @@ export async function delegateGameSession(
     .accounts({ payer })
     .rpc({ skipPreflight: true });
 
-  console.log("game_session delegated to ER, sig:", sig);
+  console.log("game_session delegated, sig:", sig);
   return sig;
 }
 
-// delegate a player_board account to ER using raw SDK instruction
+// delegate a player_board via raw SDK instruction
 export async function delegatePlayerBoard(
   connection: Connection,
   payer: PublicKey,
@@ -96,13 +75,13 @@ export async function delegatePlayerBoard(
   });
   await connection.confirmTransaction(sig, "confirmed");
 
-  console.log("player_board delegated to ER, sig:", sig);
+  console.log("player_board delegated, sig:", sig);
   return sig;
 }
 
-// commit and undelegate all accounts back to L1
+// commit final state and undelegate all accounts back to L1
 export async function commitAndUndelegateAll(
-  erConnection: Connection,
+  connection: Connection,
   payer: PublicKey,
   gameId: BN,
   playerOne: PublicKey,
@@ -121,11 +100,11 @@ export async function commitAndUndelegateAll(
 
   const tx = new Transaction().add(ix);
   tx.feePayer = payer;
-  const { blockhash } = await erConnection.getLatestBlockhash("confirmed");
+  const { blockhash } = await connection.getLatestBlockhash("confirmed");
   tx.recentBlockhash = blockhash;
 
   const signed = await signTransaction(tx);
-  const sig = await erConnection.sendRawTransaction(signed.serialize(), {
+  const sig = await connection.sendRawTransaction(signed.serialize(), {
     skipPreflight: true,
   });
 

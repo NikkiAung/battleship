@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BN, Program, type Idl } from "@coral-xyz/anchor";
+import { BN } from "@coral-xyz/anchor";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 import { useAnchorProgram } from "./useAnchorProgram";
 import { useSolanaWallet } from "./useSolanaWallet";
@@ -21,11 +21,8 @@ import {
   delegateGameSession,
   delegatePlayerBoard,
   commitAndUndelegateAll,
-  createErProvider,
-  getErConnection,
 } from "../services/delegation";
-import { clearTeeAuth } from "../services/tee";
-import idl from "../idl/battleship.json";
+import { authenticateWithTee, clearTeeAuth } from "../services/tee";
 
 export interface GameSessionState {
   gameId: BN | null;
@@ -42,9 +39,16 @@ export interface GameSessionState {
 const RPC_OPTS = { skipPreflight: true, commitment: "confirmed" as const };
 
 export const useGameSession = () => {
-  const { program, provider, getGameSessionPda, getPlayerBoardPda } =
-    useAnchorProgram();
-  const { publicKey, isConnected, connection, signTransaction } =
+  // l1Program for init/placement/finalize, erProgram for gameplay (MagicRouter)
+  const {
+    l1Program,
+    erProgram,
+    l1Connection,
+    magicConnection,
+    getGameSessionPda,
+    getPlayerBoardPda,
+  } = useAnchorProgram();
+  const { publicKey, isConnected, signMessage, signTransaction } =
     useSolanaWallet();
 
   const [state, setState] = useState<GameSessionState>({
@@ -61,21 +65,16 @@ export const useGameSession = () => {
 
   const secretRef = useRef<Uint8Array | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const erProgramRef = useRef<Program<Idl> | null>(null);
 
   const patch = (p: Partial<GameSessionState>) =>
     setState((s) => ({ ...s, ...p }));
 
   // ---------- fetch helpers ----------
-
-  const getActiveProgram = useCallback((): Program<Idl> | null => {
-    if (state.isDelegated && erProgramRef.current) return erProgramRef.current;
-    return program;
-  }, [state.isDelegated, program]);
+  // prefer erProgram (MagicRouter routes to ER if delegated), fallback to l1Program
 
   const fetchGameSession = useCallback(
     async (gameId: BN): Promise<GameSession | null> => {
-      const prog = getActiveProgram();
+      const prog = erProgram || l1Program;
       if (!prog) return null;
       try {
         const [pda] = getGameSessionPda(gameId);
@@ -87,12 +86,12 @@ export const useGameSession = () => {
         return null;
       }
     },
-    [getActiveProgram, getGameSessionPda]
+    [erProgram, l1Program, getGameSessionPda]
   );
 
   const fetchPlayerBoard = useCallback(
     async (gameId: BN, player: PublicKey): Promise<PlayerBoard | null> => {
-      const prog = getActiveProgram();
+      const prog = erProgram || l1Program;
       if (!prog) return null;
       try {
         const [pda] = getPlayerBoardPda(gameId, player);
@@ -104,7 +103,7 @@ export const useGameSession = () => {
         return null;
       }
     },
-    [getActiveProgram, getPlayerBoardPda]
+    [erProgram, l1Program, getPlayerBoardPda]
   );
 
   // ---------- polling ----------
@@ -138,19 +137,13 @@ export const useGameSession = () => {
     };
   }, []);
 
-  // ---------- er setup ----------
-
-  const setupErProgram = useCallback(() => {
-    if (!provider?.wallet) return;
-    const erProvider = createErProvider(provider.wallet);
-    erProgramRef.current = new Program(idl as Idl, erProvider);
-  }, [provider]);
-
   // ---------- instructions ----------
+  // all .rpc() calls go through ConnectionMagicRouter which
+  // auto-routes to L1 or ER based on delegation status of writable accounts
 
-  // 1. create game (L1)
+  // 1. create game
   const initializeGame = useCallback(async (): Promise<BN> => {
-    if (!program || !publicKey) throw new Error("wallet not connected");
+    if (!l1Program || !publicKey) throw new Error("wallet not connected");
     patch({ isLoading: true, error: null });
 
     try {
@@ -160,7 +153,7 @@ export const useGameSession = () => {
       const [gameSessionPda] = getGameSessionPda(gameId);
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (program.methods as any)
+      await (l1Program.methods as any)
         .initializeGame(gameId)
         .accounts({
           gameSession: gameSessionPda,
@@ -178,12 +171,12 @@ export const useGameSession = () => {
       patch({ error: msg, isLoading: false });
       throw err;
     }
-  }, [program, publicKey, getGameSessionPda, fetchGameSession, startPolling]);
+  }, [l1Program, publicKey, getGameSessionPda, fetchGameSession, startPolling]);
 
-  // 2. join game (L1)
+  // 2. join game
   const joinGame = useCallback(
     async (gameId: BN) => {
-      if (!program || !publicKey) throw new Error("wallet not connected");
+      if (!l1Program || !publicKey) throw new Error("wallet not connected");
       patch({ isLoading: true, error: null });
 
       try {
@@ -191,7 +184,7 @@ export const useGameSession = () => {
         const [playerBoardPda] = getPlayerBoardPda(gameId, publicKey);
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (program.methods as any)
+        await (l1Program.methods as any)
           .initializePlayerBoard(gameId)
           .accounts({
             gameSession: gameSessionPda,
@@ -212,7 +205,7 @@ export const useGameSession = () => {
       }
     },
     [
-      program,
+      l1Program,
       publicKey,
       getGameSessionPda,
       getPlayerBoardPda,
@@ -222,10 +215,10 @@ export const useGameSession = () => {
     ]
   );
 
-  // 2b. create own board (L1)
+  // 2b. create own board
   const initializePlayerBoard = useCallback(
     async (gameId: BN) => {
-      if (!program || !publicKey) throw new Error("wallet not connected");
+      if (!l1Program || !publicKey) throw new Error("wallet not connected");
       patch({ isLoading: true, error: null });
 
       try {
@@ -233,7 +226,7 @@ export const useGameSession = () => {
         const [playerBoardPda] = getPlayerBoardPda(gameId, publicKey);
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (program.methods as any)
+        await (l1Program.methods as any)
           .initializePlayerBoard(gameId)
           .accounts({
             gameSession: gameSessionPda,
@@ -251,13 +244,19 @@ export const useGameSession = () => {
         throw err;
       }
     },
-    [program, publicKey, getGameSessionPda, getPlayerBoardPda, fetchPlayerBoard]
+    [
+      l1Program,
+      publicKey,
+      getGameSessionPda,
+      getPlayerBoardPda,
+      fetchPlayerBoard,
+    ]
   );
 
-  // 3. auto place ships (L1)
+  // 3. auto place ships
   const autoPlaceShips = useCallback(
     async (gameId: BN) => {
-      if (!program || !publicKey) throw new Error("wallet not connected");
+      if (!l1Program || !publicKey) throw new Error("wallet not connected");
       patch({ isLoading: true, error: null });
 
       try {
@@ -269,17 +268,14 @@ export const useGameSession = () => {
         const [playerBoardPda] = getPlayerBoardPda(gameId, publicKey);
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (program.methods as any)
+        await (l1Program.methods as any)
           .autoPlaceShips(
             gameId,
             Array.from(grid),
             Array.from(encrypted),
             Array.from(commitment)
           )
-          .accounts({
-            playerBoard: playerBoardPda,
-            player: publicKey,
-          })
+          .accounts({ playerBoard: playerBoardPda, player: publicKey })
           .rpc(RPC_OPTS);
 
         const cells = getShipCells(grid);
@@ -291,13 +287,14 @@ export const useGameSession = () => {
         throw err;
       }
     },
-    [program, publicKey, getPlayerBoardPda, fetchPlayerBoard]
+    [l1Program, publicKey, getPlayerBoardPda, fetchPlayerBoard]
   );
 
-  // 4. start game — transitions Initialized → InProgress (L1)
+  // 4. start game + delegate to ER
   const startGame = useCallback(
     async (gameId: BN) => {
-      if (!program || !publicKey) throw new Error("wallet not connected");
+      if (!l1Program || !publicKey || !signTransaction)
+        throw new Error("wallet not connected");
       patch({ isLoading: true, error: null });
 
       try {
@@ -308,8 +305,9 @@ export const useGameSession = () => {
         const [boardOnePda] = getPlayerBoardPda(gameId, session.playerOne);
         const [boardTwoPda] = getPlayerBoardPda(gameId, session.playerTwo);
 
+        // transition Initialized → InProgress
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (program.methods as any)
+        await (l1Program.methods as any)
           .startGame(gameId)
           .accounts({
             gameSession: gameSessionPda,
@@ -318,13 +316,38 @@ export const useGameSession = () => {
           })
           .rpc(RPC_OPTS);
 
+        // delegate all accounts to ER for fast gameplay
+        try {
+          await delegateGameSession(l1Program, publicKey, gameId);
+          await delegatePlayerBoard(
+            l1Connection,
+            publicKey,
+            gameId,
+            session.playerOne,
+            signTransaction
+          );
+          await delegatePlayerBoard(
+            l1Connection,
+            publicKey,
+            gameId,
+            session.playerTwo,
+            signTransaction
+          );
+          patch({ isDelegated: true });
+          console.log("delegation complete, gameplay in ER");
+
+          // authenticate with TEE for verified ER operations
+          if (signMessage) {
+            authenticateWithTee(publicKey, signMessage).catch((err) =>
+              console.warn("tee auth failed (non-fatal):", err)
+            );
+          }
+        } catch (err) {
+          console.warn("delegation failed, playing on L1:", err);
+        }
+
         const updated = await fetchGameSession(gameId);
         patch({ gameSession: updated, isLoading: false });
-
-        // auto-delegate to ER after starting the game
-        if (updated) {
-          await doDelegation(gameId, updated);
-        }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         patch({ error: msg, isLoading: false });
@@ -332,8 +355,11 @@ export const useGameSession = () => {
       }
     },
     [
-      program,
+      l1Program,
       publicKey,
+      signTransaction,
+      signMessage,
+      magicConnection,
       state.gameSession,
       getGameSessionPda,
       getPlayerBoardPda,
@@ -341,59 +367,11 @@ export const useGameSession = () => {
     ]
   );
 
-  // internal delegation helper
-  const doDelegation = async (gameId: BN, session: GameSession) => {
-    if (!program || !publicKey || !signTransaction) return;
-
-    try {
-      await delegateGameSession(program, publicKey, gameId);
-
-      if (session.playerTwo) {
-        await delegatePlayerBoard(
-          connection,
-          publicKey,
-          gameId,
-          session.playerOne,
-          signTransaction
-        );
-        await delegatePlayerBoard(
-          connection,
-          publicKey,
-          gameId,
-          session.playerTwo,
-          signTransaction
-        );
-      }
-
-      setupErProgram();
-      patch({ isDelegated: true });
-      console.log("delegation complete, gameplay now in ER");
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("delegation failed:", msg);
-      patch({ error: `delegation failed, playing on L1: ${msg}` });
-    }
-  };
-
-  // 5. delegate game to ER (L1 → ER) — callable manually
-  const delegateToER = useCallback(
-    async (gameId: BN) => {
-      if (!state.gameSession) throw new Error("no game session");
-      patch({ isLoading: true, error: null });
-      await doDelegation(gameId, state.gameSession);
-      patch({ isLoading: false });
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state.gameSession]
-  );
-
-  // 6. process attack (ER if delegated, L1 fallback)
-  // hit/miss is determined on-chain from ship_positions — no client trust needed
+  // 5. process attack — uses erProgram (MagicRouter routes to ER if delegated)
   const processAttack = useCallback(
     async (gameId: BN, cell: number) => {
-      if (!publicKey) throw new Error("wallet not connected");
-      const prog = getActiveProgram();
-      if (!prog) throw new Error("no program");
+      const prog = erProgram || l1Program;
+      if (!prog || !publicKey) throw new Error("wallet not connected");
       patch({ isLoading: true, error: null });
 
       try {
@@ -428,8 +406,8 @@ export const useGameSession = () => {
       }
     },
     [
+      l1Program,
       publicKey,
-      getActiveProgram,
       state.gameSession,
       getGameSessionPda,
       getPlayerBoardPda,
@@ -438,12 +416,11 @@ export const useGameSession = () => {
     ]
   );
 
-  // 7. check winner (ER or L1)
+  // 6. check winner — uses erProgram (MagicRouter routes to ER if delegated)
   const checkWinner = useCallback(
     async (gameId: BN) => {
-      if (!publicKey) return;
-      const prog = getActiveProgram();
-      if (!prog) return;
+      const prog = erProgram || l1Program;
+      if (!prog || !publicKey) return;
 
       try {
         const session = state.gameSession;
@@ -475,8 +452,8 @@ export const useGameSession = () => {
       }
     },
     [
+      l1Program,
       publicKey,
-      getActiveProgram,
       state.gameSession,
       getGameSessionPda,
       getPlayerBoardPda,
@@ -484,7 +461,7 @@ export const useGameSession = () => {
     ]
   );
 
-  // 8. undelegate from ER (ER → L1)
+  // 7. commit + undelegate from ER back to L1
   const undelegateFromER = useCallback(async () => {
     if (!publicKey || !signTransaction) throw new Error("wallet not connected");
     if (!state.gameId || !state.gameSession) throw new Error("no game");
@@ -497,9 +474,8 @@ export const useGameSession = () => {
         : session.playerOne;
 
       if (opponentKey) {
-        const erConn = getErConnection();
         await commitAndUndelegateAll(
-          erConn,
+          magicConnection,
           publicKey,
           state.gameId,
           session.playerOne,
@@ -508,7 +484,6 @@ export const useGameSession = () => {
         );
       }
 
-      erProgramRef.current = null;
       patch({ isDelegated: false, isLoading: false });
       console.log("undelegation complete, state back on L1");
     } catch (err: unknown) {
@@ -516,19 +491,25 @@ export const useGameSession = () => {
       patch({ error: msg, isLoading: false });
       throw err;
     }
-  }, [publicKey, signTransaction, state.gameId, state.gameSession]);
+  }, [
+    publicKey,
+    signTransaction,
+    magicConnection,
+    state.gameId,
+    state.gameSession,
+  ]);
 
-  // 9. finalize game (L1)
+  // 8. finalize game
   const finalizeGame = useCallback(
     async (gameId: BN) => {
-      if (!program) throw new Error("wallet not connected");
+      if (!l1Program) throw new Error("wallet not connected");
       patch({ isLoading: true, error: null });
 
       try {
         const [gameSessionPda] = getGameSessionPda(gameId);
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (program.methods as any)
+        await (l1Program.methods as any)
           .finalizeGame(gameId)
           .accounts({ gameSession: gameSessionPda })
           .rpc(RPC_OPTS);
@@ -541,7 +522,7 @@ export const useGameSession = () => {
         throw err;
       }
     },
-    [program, getGameSessionPda, fetchGameSession]
+    [l1Program, getGameSessionPda, fetchGameSession]
   );
 
   // ---------- derived helpers ----------
@@ -595,7 +576,6 @@ export const useGameSession = () => {
   const reset = useCallback(() => {
     stopPolling();
     secretRef.current = null;
-    erProgramRef.current = null;
     clearTeeAuth();
     setState({
       gameId: null,
@@ -614,18 +594,15 @@ export const useGameSession = () => {
     ...state,
     isConnected,
     publicKey,
-    // instructions
     initializeGame,
     joinGame,
     initializePlayerBoard,
     autoPlaceShips,
     startGame,
-    delegateToER,
     processAttack,
     checkWinner,
     undelegateFromER,
     finalizeGame,
-    // derived
     gameStateIs,
     isMyTurn,
     getWinner,
@@ -635,7 +612,6 @@ export const useGameSession = () => {
     getOpponentHitsReceived,
     getOwnHitsReceived,
     bothShipsPlaced,
-    // control
     startPolling,
     stopPolling,
     reset,
