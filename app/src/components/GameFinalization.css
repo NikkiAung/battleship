@@ -42,32 +42,3 @@
   display: flex;
   gap: 16px;
 }
-
-.btn {
-  padding: 12px 24px;
-  border-radius: 6px;
-  border: none;
-  font-size: 16px;
-  font-weight: bold;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  min-width: 140px;
-}
-
-.btn-primary {
-  background: #27ae60;
-  color: white;
-}
-
-.btn-primary:hover {
-  background: #2ecc71;
-}
-
-.btn-secondary {
-  background: #3498db;
-  color: white;
-}
-
-.btn-secondary:hover {
-  background: #5dade2;
-}

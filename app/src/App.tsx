@@ -1,6 +1,5 @@
 import { SolanaProvider } from "./contexts/SolanaProvider";
 import { Game } from "./components/Game";
-import "./App.css";
 
 function App() {
   return (
@@ -9,5 +8,4 @@ function App() {
     </SolanaProvider>
   );
 }
-
 export default App;

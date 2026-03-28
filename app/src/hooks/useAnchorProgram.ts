@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useConnection, useAnchorWallet } from "@solana/wallet-adapter-react";
-import { Program, AnchorProvider, type Idl } from "@coral-xyz/anchor";
+import { Program, AnchorProvider, type Idl, BN } from "@coral-xyz/anchor";
 import { PublicKey } from "@solana/web3.js";
 import idl from "../idl/battleship.json";
 import {
@@ -14,36 +14,43 @@ export const useAnchorProgram = () => {
   const { connection } = useConnection();
   const wallet = useAnchorWallet();
 
-  const program = useMemo(() => {
-    if (!wallet) return null;
-
-    const provider = new AnchorProvider(connection, wallet, {
-      commitment: "confirmed",
-    });
-
-    return new Program(idl as Idl, provider);
-  }, [connection, wallet]);
-
   const programId = useMemo(() => new PublicKey(PROGRAM_ID), []);
 
-  // derive game session pda
-  const getGameSessionPda = (gameId: number[]) => {
+  const provider = useMemo(() => {
+    if (!wallet) return null;
+    return new AnchorProvider(connection, wallet, {
+      commitment: "confirmed",
+    });
+  }, [connection, wallet]);
+
+  const program = useMemo(() => {
+    if (!provider) return null;
+    return new Program(idl as Idl, provider);
+  }, [provider]);
+
+  // derive game session pda from u64 game_id
+  const getGameSessionPda = (gameId: BN) => {
     return PublicKey.findProgramAddressSync(
-      [Buffer.from(GAME_SESSION_SEED), Buffer.from(gameId)],
+      [Buffer.from(GAME_SESSION_SEED), gameId.toArrayLike(Buffer, "le", 8)],
       programId
     );
   };
 
-  // derive player board pda
-  const getPlayerBoardPda = (gameId: number[], player: PublicKey) => {
+  // derive player board pda from u64 game_id and player pubkey
+  const getPlayerBoardPda = (gameId: BN, player: PublicKey) => {
     return PublicKey.findProgramAddressSync(
-      [Buffer.from(PLAYER_BOARD_SEED), Buffer.from(gameId), player.toBuffer()],
+      [
+        Buffer.from(PLAYER_BOARD_SEED),
+        gameId.toArrayLike(Buffer, "le", 8),
+        player.toBuffer(),
+      ],
       programId
     );
   };
 
   return {
     program,
+    provider,
     programId,
     getGameSessionPda,
     getPlayerBoardPda,

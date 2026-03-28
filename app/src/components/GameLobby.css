@@ -71,37 +71,3 @@
   color: #888;
   font-style: italic;
 }
-
-.btn {
-  padding: 12px 24px;
-  border-radius: 6px;
-  border: none;
-  font-size: 16px;
-  font-weight: bold;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  min-width: 160px;
-}
-
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn-primary {
-  background: #27ae60;
-  color: white;
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: #2ecc71;
-}
-
-.btn-secondary {
-  background: #3498db;
-  color: white;
-}
-
-.btn-secondary:hover:not(:disabled) {
-  background: #5dade2;
-}

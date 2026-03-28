@@ -1,288 +1,233 @@
-import { type FC, useState } from "react";
+import { type FC, useEffect } from "react";
+import { BN } from "@coral-xyz/anchor";
 import { GameLobby } from "./GameLobby";
 import { ShipPlacement } from "./ShipPlacement";
 import { AttackPhase } from "./AttackPhase";
 import { GameFinalization } from "./GameFinalization";
-import { useSolanaWallet } from "../hooks/useSolanaWallet";
-import { CellState, GameState, GRID_SIZE } from "../idl/battleship";
+import { useGameSession } from "../hooks/useGameSession";
 import "./Game.css";
 
-// game phases
-type GamePhase = "lobby" | "placement" | "battle" | "finished";
+// game phases (ui state machine)
+type GamePhase = "lobby" | "placement" | "waiting" | "battle" | "finished";
 
-// main game component - orchestrates all phases
+// main game component — orchestrates all phases
 export const Game: FC = () => {
-  const { isConnected, publicKey } = useSolanaWallet();
+  const gs = useGameSession();
 
-  // game state
-  const [phase, setPhase] = useState<GamePhase>("lobby");
-  const [isLoading, setIsLoading] = useState(false);
-  const [gameId, setGameId] = useState<number[] | null>(null);
-
-  // player state
-  const [ownCellStates, setOwnCellStates] = useState<CellState[]>(
-    Array(GRID_SIZE * GRID_SIZE).fill(CellState.Empty)
-  );
-  const [ownShipPositions, setOwnShipPositions] = useState<number[]>([]);
-  const [ownHitsReceived, setOwnHitsReceived] = useState(0);
-  const [isReady, setIsReady] = useState(false);
-
-  // opponent state
-  const [opponentCellStates, setOpponentCellStates] = useState<CellState[]>(
-    Array(GRID_SIZE * GRID_SIZE).fill(CellState.Empty)
-  );
-  const [opponentHitsReceived, setOpponentHitsReceived] = useState(0);
-
-  // turn state
-  const [isMyTurn, setIsMyTurn] = useState(false);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [_gameState, setGameState] = useState<GameState>(
-    GameState.WaitingForPlayers
-  );
-  const [winner, setWinner] = useState<string | null>(null);
-
-  // generate random game id (8 bytes)
-  const generateGameId = (): number[] => {
-    const arr = new Uint8Array(8);
-    crypto.getRandomValues(arr);
-    return Array.from(arr);
+  // ---- derive ui phase from on-chain state ----
+  const derivePhase = (): GamePhase => {
+    if (!gs.gameId || !gs.gameSession) return "lobby";
+    if (gs.gameStateIs("finished")) return "finished";
+    if (gs.gameStateIs("inProgress")) return "battle";
+    if (gs.bothShipsPlaced()) return "waiting";
+    if (!gs.ownBoard?.shipsPlaced) return "placement";
+    return "waiting";
   };
 
-  // create a new game
+  const phase = derivePhase();
+
+  // ---- tee auth on wallet connect ----
+  useEffect(() => {
+    if (gs.isConnected && !gs.teeAuthenticated) {
+      gs.authenticateTee();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gs.isConnected]);
+
+  // ---- auto-delegate when both players have placed ships ----
+  useEffect(() => {
+    if (
+      phase === "waiting" &&
+      gs.bothShipsPlaced() &&
+      gs.gameId &&
+      gs.gameStateIs("initialized") &&
+      !gs.isDelegated &&
+      !gs.isLoading &&
+      gs.publicKey &&
+      gs.gameSession?.playerOne.equals(gs.publicKey)
+    ) {
+      // game creator triggers delegation
+      gs.delegateToER(gs.gameId).catch(console.error);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    phase,
+    gs.gameSession,
+    gs.ownBoard?.shipsPlaced,
+    gs.opponentBoard?.shipsPlaced,
+  ]);
+
+  // ---- auto-check winner after each attack ----
+  useEffect(() => {
+    if (phase === "battle" && gs.gameId) {
+      const ownHits = gs.getOwnHitsReceived();
+      const oppHits = gs.getOpponentHitsReceived();
+      if (ownHits >= 17 || oppHits >= 17) {
+        gs.checkWinner(gs.gameId).catch(console.error);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gs.ownBoard?.hitsReceived, gs.opponentBoard?.hitsReceived]);
+
+  // ---- auto-undelegate when game finishes ----
+  useEffect(() => {
+    if (phase === "finished" && gs.isDelegated && !gs.isLoading) {
+      gs.undelegateFromER().catch(console.error);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, gs.isDelegated]);
+
+  // ---- handlers ----
+
   const handleCreateGame = async () => {
-    setIsLoading(true);
     try {
-      const newGameId = generateGameId();
-      setGameId(newGameId);
-      // todo: call initialize_game instruction
-      console.log("Creating game with id:", newGameId);
-      setPhase("placement");
+      const gameId = await gs.initializeGame();
+      await gs.initializePlayerBoard(gameId);
     } catch (err) {
-      console.error("Failed to create game:", err);
-    } finally {
-      setIsLoading(false);
+      console.error("create game failed:", err);
     }
   };
 
-  // join an existing game
-  const handleJoinGame = async (gameIdStr: string) => {
-    setIsLoading(true);
+  const handleJoinGame = async (gameIdHex: string) => {
     try {
-      // parse game id from hex string
-      const parsed =
-        gameIdStr.match(/.{1,2}/g)?.map((x) => parseInt(x, 16)) ?? [];
-      if (parsed.length !== 8) {
-        throw new Error("Invalid game ID format");
+      const bytes = [];
+      for (let i = 0; i < gameIdHex.length; i += 2) {
+        bytes.push(parseInt(gameIdHex.slice(i, i + 2), 16));
       }
-      setGameId(parsed);
-      // todo: call initialize_player_board instruction
-      console.log("Joining game:", parsed);
-      setPhase("placement");
+      const gameId = new BN(Buffer.from(bytes), "le");
+      await gs.joinGame(gameId);
     } catch (err) {
-      console.error("Failed to join game:", err);
-    } finally {
-      setIsLoading(false);
+      console.error("join game failed:", err);
     }
   };
 
-  // auto-place ships (calls program)
   const handleAutoPlace = async () => {
-    setIsLoading(true);
+    if (!gs.gameId) return;
     try {
-      // todo: call auto_place_ships instruction
-      // for now, mock random placement
-      const positions: number[] = [];
-      const shipSizes = [5, 4, 3, 3, 2];
-
-      for (const size of shipSizes) {
-        let placed = false;
-        while (!placed) {
-          const horizontal = Math.random() > 0.5;
-          const maxRow = horizontal ? GRID_SIZE : GRID_SIZE - size;
-          const maxCol = horizontal ? GRID_SIZE - size : GRID_SIZE;
-          const row = Math.floor(Math.random() * maxRow);
-          const col = Math.floor(Math.random() * maxCol);
-
-          const shipCells: number[] = [];
-          for (let i = 0; i < size; i++) {
-            const idx = horizontal
-              ? row * GRID_SIZE + col + i
-              : (row + i) * GRID_SIZE + col;
-            shipCells.push(idx);
-          }
-
-          // check no overlap
-          if (!shipCells.some((c) => positions.includes(c))) {
-            positions.push(...shipCells);
-            placed = true;
-          }
-        }
-      }
-
-      setOwnShipPositions(positions);
-
-      // update cell states to show ships
-      const newCellStates = Array(GRID_SIZE * GRID_SIZE).fill(CellState.Empty);
-      positions.forEach((idx) => {
-        newCellStates[idx] = CellState.Ship;
-      });
-      setOwnCellStates(newCellStates);
-
-      console.log("Ships placed at:", positions);
+      await gs.autoPlaceShips(gs.gameId);
     } catch (err) {
-      console.error("Failed to place ships:", err);
-    } finally {
-      setIsLoading(false);
+      console.error("auto place ships failed:", err);
     }
   };
 
-  // confirm ship placement
   const handleReady = async () => {
-    setIsLoading(true);
+    // ships are already on-chain from autoPlaceShips
+    // delegation happens automatically in the effect above
+    console.log("ships confirmed, waiting for opponent...");
+  };
+
+  const handleAttack = async (cellIndex: number) => {
+    if (!gs.gameId || !gs.isMyTurn()) return;
     try {
-      // todo: set ready flag on chain
-      setIsReady(true);
-      // todo: wait for opponent ready, then start battle
-      // for now, auto-start battle
-      setGameState(GameState.InProgress);
-      setIsMyTurn(true);
-      setPhase("battle");
+      // in ER with TEE, the hit/miss is determined by the TEE validator
+      // which has access to the encrypted ship grid
+      // for now we pass false; the program records it accordingly
+      await gs.processAttack(gs.gameId, cellIndex, false);
     } catch (err) {
-      console.error("Failed to confirm placement:", err);
-    } finally {
-      setIsLoading(false);
+      console.error("attack failed:", err);
     }
   };
 
-  // process attack
-  const handleAttack = async (index: number) => {
-    if (!isMyTurn || isLoading) return;
-
-    setIsLoading(true);
+  const handleFinalize = async () => {
+    if (!gs.gameId) return;
     try {
-      // todo: call process_attack instruction
-      // mock: random hit/miss
-      const isHit = Math.random() > 0.5;
-      const newOpponentCells = [...opponentCellStates];
-      newOpponentCells[index] = isHit ? CellState.Hit : CellState.Miss;
-      setOpponentCellStates(newOpponentCells);
-
-      if (isHit) {
-        const newHits = opponentHitsReceived + 1;
-        setOpponentHitsReceived(newHits);
-
-        // check winner (17 hits = all ships sunk)
-        if (newHits >= 17) {
-          setWinner(publicKey?.toBase58() ?? "Unknown");
-          setGameState(GameState.Finished);
-          setPhase("finished");
-          return;
-        }
+      // undelegate if still in ER
+      if (gs.isDelegated) {
+        await gs.undelegateFromER();
       }
-
-      // switch turns
-      setIsMyTurn(false);
-
-      // simulate opponent turn after delay
-      setTimeout(() => {
-        const availableCells = ownCellStates
-          .map((s, i) => (s !== CellState.Hit && s !== CellState.Miss ? i : -1))
-          .filter((i) => i !== -1);
-        const targetIdx =
-          availableCells[Math.floor(Math.random() * availableCells.length)];
-
-        const isOwnHit = ownShipPositions.includes(targetIdx);
-        const newOwnCells = [...ownCellStates];
-        newOwnCells[targetIdx] = isOwnHit ? CellState.Hit : CellState.Miss;
-        setOwnCellStates(newOwnCells);
-
-        if (isOwnHit) {
-          const newOwnHits = ownHitsReceived + 1;
-          setOwnHitsReceived(newOwnHits);
-
-          if (newOwnHits >= 17) {
-            setWinner("Opponent");
-            setGameState(GameState.Finished);
-            setPhase("finished");
-            return;
-          }
-        }
-
-        setIsMyTurn(true);
-      }, 1000);
+      await gs.finalizeGame(gs.gameId);
+      // try to reveal opponent grid from TEE
+      const revealed = await gs.revealOpponentGrid();
+      if (revealed) {
+        console.log("opponent grid revealed from TEE:", revealed);
+      }
     } catch (err) {
-      console.error("Failed to process attack:", err);
-    } finally {
-      setIsLoading(false);
+      console.error("finalize failed:", err);
     }
-  };
-
-  // reset game
-  const handlePlayAgain = () => {
-    setPhase("placement");
-    setOwnCellStates(Array(GRID_SIZE * GRID_SIZE).fill(CellState.Empty));
-    setOwnShipPositions([]);
-    setOwnHitsReceived(0);
-    setIsReady(false);
-    setOpponentCellStates(Array(GRID_SIZE * GRID_SIZE).fill(CellState.Empty));
-    setOpponentHitsReceived(0);
-    setIsMyTurn(false);
-    setWinner(null);
   };
 
   const handleBackToLobby = () => {
-    handlePlayAgain();
-    setGameId(null);
-    setPhase("lobby");
+    gs.reset();
   };
+
+  // game id hex for display
+  const gameIdHex = gs.gameId
+    ? Buffer.from(gs.gameId.toArray("le", 8)).toString("hex")
+    : null;
 
   return (
     <div className="game">
       {phase === "lobby" && (
         <GameLobby
-          isWalletConnected={isConnected}
+          isWalletConnected={gs.isConnected}
           onCreateGame={handleCreateGame}
           onJoinGame={handleJoinGame}
-          isLoading={isLoading}
+          isLoading={gs.isLoading}
         />
       )}
 
       {phase === "placement" && (
         <ShipPlacement
-          cellStates={ownCellStates}
-          shipPositions={ownShipPositions}
+          cellStates={gs.getOwnCellStates()}
+          shipCells={gs.shipCells}
           onAutoPlace={handleAutoPlace}
           onReady={handleReady}
-          isLoading={isLoading}
-          isReady={isReady}
+          isLoading={gs.isLoading}
+          isReady={gs.ownBoard?.shipsPlaced ?? false}
         />
+      )}
+
+      {phase === "waiting" && (
+        <div className="waiting-screen">
+          <h2>Waiting for opponent...</h2>
+          <p>Share this Game ID with your opponent:</p>
+          <code className="game-id-code">{gameIdHex}</code>
+          {gs.bothShipsPlaced() && !gs.isDelegated && (
+            <p className="ready-text">
+              Both players ready! Delegating to ER...
+            </p>
+          )}
+          {gs.isDelegated && (
+            <p className="ready-text">
+              Delegated to Ephemeral Rollup! Starting game...
+            </p>
+          )}
+          {gs.teeAuthenticated && <p className="tee-badge">TEE Verified</p>}
+        </div>
       )}
 
       {phase === "battle" && (
         <AttackPhase
-          ownCellStates={ownCellStates}
-          ownShipPositions={ownShipPositions}
-          ownHitsReceived={ownHitsReceived}
-          opponentCellStates={opponentCellStates}
-          opponentHitsReceived={opponentHitsReceived}
-          isMyTurn={isMyTurn}
+          ownCellStates={gs.getOwnCellStates()}
+          ownShipCells={gs.shipCells}
+          ownHitsReceived={gs.getOwnHitsReceived()}
+          opponentCellStates={gs.getOpponentCellStates()}
+          opponentHitsReceived={gs.getOpponentHitsReceived()}
+          isMyTurn={gs.isMyTurn()}
           onAttack={handleAttack}
-          isLoading={isLoading}
+          isLoading={gs.isLoading}
         />
       )}
 
-      {phase === "finished" && winner && (
+      {phase === "finished" && (
         <GameFinalization
-          winner={winner}
-          isWinner={winner === publicKey?.toBase58()}
-          onPlayAgain={handlePlayAgain}
+          winner={gs.getWinner() ?? "Unknown"}
+          isWinner={gs.amIWinner()}
+          onPlayAgain={handleFinalize}
           onBackToLobby={handleBackToLobby}
         />
       )}
 
-      {gameId && phase !== "lobby" && (
+      {gs.error && (
+        <div className="error-banner">
+          <p>{gs.error}</p>
+        </div>
+      )}
+
+      {gameIdHex && phase !== "lobby" && (
         <div className="game-id-display">
-          Game ID: {gameId.map((b) => b.toString(16).padStart(2, "0")).join("")}
+          Game ID: {gameIdHex}
+          {gs.isDelegated && <span className="er-badge"> [ER]</span>}
         </div>
       )}
     </div>

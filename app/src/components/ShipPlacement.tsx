@@ -1,15 +1,11 @@
 import { type FC } from "react";
 import { GameBoard } from "./GameBoard";
-import {
-  type CellState,
-  SHIP_SIZES,
-  TOTAL_SHIP_CELLS,
-} from "../idl/battleship";
+import { SHIP_SIZES, TOTAL_SHIP_CELLS } from "../idl/battleship";
 import "./ShipPlacement.css";
 
 interface ShipPlacementProps {
-  cellStates: CellState[];
-  shipPositions: number[];
+  cellStates: number[];
+  shipCells: number[];
   onAutoPlace: () => void;
   onReady: () => void;
   isLoading: boolean;
@@ -19,13 +15,13 @@ interface ShipPlacementProps {
 // ship placement phase ui
 export const ShipPlacement: FC<ShipPlacementProps> = ({
   cellStates,
-  shipPositions,
+  shipCells,
   onAutoPlace,
   onReady,
   isLoading,
   isReady,
 }) => {
-  const placedShipsCount = shipPositions.length;
+  const placedShipsCount = shipCells.length;
   const allShipsPlaced = placedShipsCount === TOTAL_SHIP_CELLS;
 
   return (
@@ -50,11 +46,7 @@ export const ShipPlacement: FC<ShipPlacementProps> = ({
         </p>
       </div>
 
-      <GameBoard
-        cellStates={cellStates}
-        shipPositions={shipPositions}
-        disabled
-      />
+      <GameBoard cellStates={cellStates} shipCells={shipCells} disabled />
 
       <div className="placement-actions">
         <button

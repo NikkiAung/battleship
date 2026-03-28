@@ -3,8 +3,10 @@ import { CellState, GRID_SIZE } from "../idl/battleship";
 import "./GameBoard.css";
 
 interface GameBoardProps {
-  cellStates: CellState[];
-  shipPositions?: number[]; // only show ships on own board
+  // on-chain cell_states u8[100]: 0=Unknown, 1=Miss, 2=Hit
+  cellStates: number[];
+  // local-only ship cells (own board only, never sent to chain)
+  shipCells?: number[];
   onCellClick?: (index: number) => void;
   isOpponentBoard?: boolean;
   disabled?: boolean;
@@ -13,7 +15,7 @@ interface GameBoardProps {
 // 10x10 game board grid component
 export const GameBoard: FC<GameBoardProps> = ({
   cellStates,
-  shipPositions = [],
+  shipCells = [],
   onCellClick,
   isOpponentBoard = false,
   disabled = false,
@@ -21,11 +23,11 @@ export const GameBoard: FC<GameBoardProps> = ({
   // get cell class based on state
   const getCellClass = (index: number): string => {
     const state = cellStates[index];
-    const hasShip = shipPositions.includes(index);
+    const hasShip = shipCells.includes(index);
     const classes = ["cell"];
 
     // show ship positions only on own board
-    if (!isOpponentBoard && hasShip && state === CellState.Ship) {
+    if (!isOpponentBoard && hasShip && state === CellState.Unknown) {
       classes.push("ship");
     }
 
@@ -45,13 +47,8 @@ export const GameBoard: FC<GameBoardProps> = ({
   // handle cell click
   const handleCellClick = (index: number) => {
     if (disabled || !onCellClick) return;
-    // only allow clicking on empty or ship cells (for attacks)
-    if (
-      cellStates[index] === CellState.Hit ||
-      cellStates[index] === CellState.Miss
-    ) {
-      return;
-    }
+    // only allow clicking on unknown cells (for attacks)
+    if (cellStates[index] !== CellState.Unknown) return;
     onCellClick(index);
   };
 
@@ -70,7 +67,7 @@ export const GameBoard: FC<GameBoardProps> = ({
 
   // render row headers (1-10)
   const renderRowHeader = (row: number) => (
-    <div key={`row-${row}`} className="header-cell">
+    <div key={`row-header-${row}`} className="header-cell">
       {row + 1}
     </div>
   );

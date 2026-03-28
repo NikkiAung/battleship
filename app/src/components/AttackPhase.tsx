@@ -1,15 +1,15 @@
 import { type FC } from "react";
 import { GameBoard } from "./GameBoard";
-import { type CellState, TOTAL_SHIP_CELLS } from "../idl/battleship";
+import { TOTAL_SHIP_CELLS } from "../idl/battleship";
 import "./AttackPhase.css";
 
 interface AttackPhaseProps {
   // own board state
-  ownCellStates: CellState[];
-  ownShipPositions: number[];
+  ownCellStates: number[];
+  ownShipCells: number[];
   ownHitsReceived: number;
   // opponent board state
-  opponentCellStates: CellState[];
+  opponentCellStates: number[];
   opponentHitsReceived: number;
   // game state
   isMyTurn: boolean;
@@ -20,7 +20,7 @@ interface AttackPhaseProps {
 // attack phase ui - shows both boards
 export const AttackPhase: FC<AttackPhaseProps> = ({
   ownCellStates,
-  ownShipPositions,
+  ownShipCells,
   ownHitsReceived,
   opponentCellStates,
   opponentHitsReceived,
@@ -46,7 +46,7 @@ export const AttackPhase: FC<AttackPhaseProps> = ({
           </p>
           <GameBoard
             cellStates={ownCellStates}
-            shipPositions={ownShipPositions}
+            shipCells={ownShipCells}
             disabled
           />
         </div>

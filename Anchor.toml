@@ -8,11 +8,14 @@ skip-lint = false
 [programs.localnet]
 battleship = "8tX8EQWsszJhLvbjws2cechrWR9MVxBG4sb3iTU2coJY"
 
+[programs.devnet]
+battleship = "8tX8EQWsszJhLvbjws2cechrWR9MVxBG4sb3iTU2coJY"
+
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

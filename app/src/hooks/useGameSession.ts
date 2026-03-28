@@ -1,0 +1,676 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { BN, Program, type Idl } from "@coral-xyz/anchor";
+import { PublicKey, SystemProgram } from "@solana/web3.js";
+import { useAnchorProgram } from "./useAnchorProgram";
+import { useSolanaWallet } from "./useSolanaWallet";
+import {
+  type GameSession,
+  type PlayerBoard,
+  isGameState,
+  BOARD_SIZE,
+  CellState,
+} from "../idl/battleship";
+import {
+  generateShipPlacements,
+  encryptGridAsync,
+  generateSecret,
+  getShipCells,
+  type ShipGrid,
+} from "../helpers/shipGrid";
+import {
+  delegateGameSession,
+  delegatePlayerBoard,
+  commitAndUndelegateAll,
+  createErProvider,
+  getErConnection,
+} from "../services/delegation";
+import {
+  authenticateWithTee,
+  storeEncryptedGrid,
+  revealGrid,
+  clearTeeAuth,
+} from "../services/tee";
+import idl from "../idl/battleship.json";
+
+export interface GameSessionState {
+  gameId: BN | null;
+  gameSession: GameSession | null;
+  ownBoard: PlayerBoard | null;
+  opponentBoard: PlayerBoard | null;
+  shipGrid: ShipGrid | null;
+  shipCells: number[];
+  error: string | null;
+  isLoading: boolean;
+  isDelegated: boolean;
+  teeAuthenticated: boolean;
+}
+
+const RPC_OPTS = { skipPreflight: true, commitment: "confirmed" as const };
+
+export const useGameSession = () => {
+  const { program, provider, getGameSessionPda, getPlayerBoardPda } =
+    useAnchorProgram();
+  const { publicKey, isConnected, connection, signMessage, signTransaction } =
+    useSolanaWallet();
+
+  const [state, setState] = useState<GameSessionState>({
+    gameId: null,
+    gameSession: null,
+    ownBoard: null,
+    opponentBoard: null,
+    shipGrid: null,
+    shipCells: [],
+    error: null,
+    isLoading: false,
+    isDelegated: false,
+    teeAuthenticated: false,
+  });
+
+  const secretRef = useRef<Uint8Array | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // er program instance for gameplay txs after delegation
+  const erProgramRef = useRef<Program<Idl> | null>(null);
+
+  const patch = (p: Partial<GameSessionState>) =>
+    setState((s) => ({ ...s, ...p }));
+
+  // ---------- fetch helpers ----------
+
+  // fetch from either L1 or ER depending on delegation status
+  const getActiveProgram = useCallback((): Program<Idl> | null => {
+    if (state.isDelegated && erProgramRef.current) return erProgramRef.current;
+    return program;
+  }, [state.isDelegated, program]);
+
+  const fetchGameSession = useCallback(
+    async (gameId: BN): Promise<GameSession | null> => {
+      const prog = getActiveProgram();
+      if (!prog) return null;
+      try {
+        const [pda] = getGameSessionPda(gameId);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (await (prog.account as any).gameSession.fetch(
+          pda
+        )) as GameSession;
+      } catch {
+        return null;
+      }
+    },
+    [getActiveProgram, getGameSessionPda]
+  );
+
+  const fetchPlayerBoard = useCallback(
+    async (gameId: BN, player: PublicKey): Promise<PlayerBoard | null> => {
+      const prog = getActiveProgram();
+      if (!prog) return null;
+      try {
+        const [pda] = getPlayerBoardPda(gameId, player);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (await (prog.account as any).playerBoard.fetch(
+          pda
+        )) as PlayerBoard;
+      } catch {
+        return null;
+      }
+    },
+    [getActiveProgram, getPlayerBoardPda]
+  );
+
+  // ---------- polling ----------
+
+  const startPolling = useCallback(
+    (gameId: BN) => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = setInterval(async () => {
+        if (!publicKey) return;
+        const session = await fetchGameSession(gameId);
+        if (!session) return;
+
+        const opponentKey = session.playerOne.equals(publicKey)
+          ? session.playerTwo
+          : session.playerOne;
+
+        const ownBoard = await fetchPlayerBoard(gameId, publicKey);
+        const opponentBoard = opponentKey
+          ? await fetchPlayerBoard(gameId, opponentKey)
+          : null;
+
+        patch({ gameSession: session, ownBoard, opponentBoard });
+      }, 2000);
+    },
+    [publicKey, fetchGameSession, fetchPlayerBoard]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  // ---------- tee auth ----------
+
+  const authenticateTee = useCallback(async () => {
+    if (!publicKey || !signMessage) return;
+    try {
+      await authenticateWithTee(publicKey, signMessage);
+      patch({ teeAuthenticated: true });
+    } catch (err) {
+      console.warn("tee auth failed (non-fatal):", err);
+    }
+  }, [publicKey, signMessage]);
+
+  // ---------- er setup ----------
+
+  const setupErProgram = useCallback(() => {
+    if (!provider?.wallet) return;
+    const erProvider = createErProvider(provider.wallet);
+    erProgramRef.current = new Program(idl as Idl, erProvider);
+  }, [provider]);
+
+  // ---------- instructions ----------
+
+  // 1. create game (L1)
+  const initializeGame = useCallback(async (): Promise<BN> => {
+    if (!program || !publicKey) throw new Error("wallet not connected");
+    patch({ isLoading: true, error: null });
+
+    try {
+      const buf = new Uint8Array(8);
+      crypto.getRandomValues(buf);
+      const gameId = new BN(buf, "le");
+      const [gameSessionPda] = getGameSessionPda(gameId);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (program.methods as any)
+        .initializeGame(gameId)
+        .accounts({
+          gameSession: gameSessionPda,
+          playerOne: publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc(RPC_OPTS);
+
+      const session = await fetchGameSession(gameId);
+      patch({ gameId, gameSession: session, isLoading: false });
+      startPolling(gameId);
+      return gameId;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      patch({ error: msg, isLoading: false });
+      throw err;
+    }
+  }, [program, publicKey, getGameSessionPda, fetchGameSession, startPolling]);
+
+  // 2. join game (L1)
+  const joinGame = useCallback(
+    async (gameId: BN) => {
+      if (!program || !publicKey) throw new Error("wallet not connected");
+      patch({ isLoading: true, error: null });
+
+      try {
+        const [gameSessionPda] = getGameSessionPda(gameId);
+        const [playerBoardPda] = getPlayerBoardPda(gameId, publicKey);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (program.methods as any)
+          .initializePlayerBoard(gameId)
+          .accounts({
+            gameSession: gameSessionPda,
+            playerBoard: playerBoardPda,
+            player: publicKey,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc(RPC_OPTS);
+
+        const session = await fetchGameSession(gameId);
+        const ownBoard = await fetchPlayerBoard(gameId, publicKey);
+        patch({ gameId, gameSession: session, ownBoard, isLoading: false });
+        startPolling(gameId);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        patch({ error: msg, isLoading: false });
+        throw err;
+      }
+    },
+    [
+      program,
+      publicKey,
+      getGameSessionPda,
+      getPlayerBoardPda,
+      fetchGameSession,
+      fetchPlayerBoard,
+      startPolling,
+    ]
+  );
+
+  // 2b. create own board (L1)
+  const initializePlayerBoard = useCallback(
+    async (gameId: BN) => {
+      if (!program || !publicKey) throw new Error("wallet not connected");
+      patch({ isLoading: true, error: null });
+
+      try {
+        const [gameSessionPda] = getGameSessionPda(gameId);
+        const [playerBoardPda] = getPlayerBoardPda(gameId, publicKey);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (program.methods as any)
+          .initializePlayerBoard(gameId)
+          .accounts({
+            gameSession: gameSessionPda,
+            playerBoard: playerBoardPda,
+            player: publicKey,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc(RPC_OPTS);
+
+        const ownBoard = await fetchPlayerBoard(gameId, publicKey);
+        patch({ ownBoard, isLoading: false });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        patch({ error: msg, isLoading: false });
+        throw err;
+      }
+    },
+    [program, publicKey, getGameSessionPda, getPlayerBoardPda, fetchPlayerBoard]
+  );
+
+  // 3. auto place ships (L1) + store encrypted grid in TEE
+  const autoPlaceShips = useCallback(
+    async (gameId: BN) => {
+      if (!program || !publicKey) throw new Error("wallet not connected");
+      patch({ isLoading: true, error: null });
+
+      try {
+        const grid = generateShipPlacements();
+        const secret = generateSecret();
+        secretRef.current = secret;
+
+        const { encrypted, commitment } = await encryptGridAsync(grid, secret);
+        const [playerBoardPda] = getPlayerBoardPda(gameId, publicKey);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (program.methods as any)
+          .autoPlaceShips(gameId, Array.from(encrypted), Array.from(commitment))
+          .accounts({
+            playerBoard: playerBoardPda,
+            player: publicKey,
+          })
+          .rpc(RPC_OPTS);
+
+        // store encrypted grid in TEE if authenticated
+        if (state.teeAuthenticated && signMessage) {
+          try {
+            const token = await authenticateWithTee(publicKey, signMessage);
+            const gameIdHex = Buffer.from(gameId.toArray("le", 8)).toString(
+              "hex"
+            );
+            await storeEncryptedGrid(
+              token,
+              gameIdHex,
+              publicKey.toBase58(),
+              Array.from(encrypted),
+              Array.from(commitment)
+            );
+          } catch (err) {
+            console.warn("tee store failed (non-fatal):", err);
+          }
+        }
+
+        const cells = getShipCells(grid);
+        const ownBoard = await fetchPlayerBoard(gameId, publicKey);
+        patch({ shipGrid: grid, shipCells: cells, ownBoard, isLoading: false });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        patch({ error: msg, isLoading: false });
+        throw err;
+      }
+    },
+    [
+      program,
+      publicKey,
+      getPlayerBoardPda,
+      fetchPlayerBoard,
+      state.teeAuthenticated,
+      signMessage,
+    ]
+  );
+
+  // 4. delegate game to ER (L1 → ER)
+  const delegateToER = useCallback(
+    async (gameId: BN) => {
+      if (!program || !publicKey || !signTransaction)
+        throw new Error("wallet not connected");
+      patch({ isLoading: true, error: null });
+
+      try {
+        // delegate game_session via anchor instruction
+        await delegateGameSession(program, publicKey, gameId);
+
+        // delegate both player boards via raw SDK instruction
+        const session = state.gameSession;
+        if (session?.playerTwo) {
+          await delegatePlayerBoard(
+            connection,
+            publicKey,
+            gameId,
+            session.playerOne,
+            signTransaction
+          );
+          await delegatePlayerBoard(
+            connection,
+            publicKey,
+            gameId,
+            session.playerTwo,
+            signTransaction
+          );
+        }
+
+        // setup ER program for gameplay
+        setupErProgram();
+
+        patch({ isDelegated: true, isLoading: false });
+        console.log("delegation complete, gameplay now in ER");
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("delegation failed:", msg);
+        // fallback: continue on L1
+        patch({
+          error: `delegation failed, playing on L1: ${msg}`,
+          isLoading: false,
+        });
+      }
+    },
+    [
+      program,
+      publicKey,
+      signTransaction,
+      connection,
+      state.gameSession,
+      setupErProgram,
+    ]
+  );
+
+  // 5. process attack (ER if delegated, L1 fallback)
+  const processAttack = useCallback(
+    async (gameId: BN, cell: number, isHit: boolean) => {
+      if (!publicKey) throw new Error("wallet not connected");
+      const prog = getActiveProgram();
+      if (!prog) throw new Error("no program");
+      patch({ isLoading: true, error: null });
+
+      try {
+        const session = state.gameSession;
+        if (!session) throw new Error("no active game session");
+
+        const opponentKey = session.playerOne.equals(publicKey)
+          ? session.playerTwo
+          : session.playerOne;
+        if (!opponentKey) throw new Error("no opponent");
+
+        const [gameSessionPda] = getGameSessionPda(gameId);
+        const [targetBoardPda] = getPlayerBoardPda(gameId, opponentKey);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (prog.methods as any)
+          .processAttack(gameId, cell, isHit)
+          .accounts({
+            gameSession: gameSessionPda,
+            targetBoard: targetBoardPda,
+            attacker: publicKey,
+          })
+          .rpc(RPC_OPTS);
+
+        const updatedSession = await fetchGameSession(gameId);
+        const opponentBoard = await fetchPlayerBoard(gameId, opponentKey);
+        patch({ gameSession: updatedSession, opponentBoard, isLoading: false });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        patch({ error: msg, isLoading: false });
+        throw err;
+      }
+    },
+    [
+      publicKey,
+      getActiveProgram,
+      state.gameSession,
+      getGameSessionPda,
+      getPlayerBoardPda,
+      fetchGameSession,
+      fetchPlayerBoard,
+    ]
+  );
+
+  // 6. check winner (ER or L1)
+  const checkWinner = useCallback(
+    async (gameId: BN) => {
+      if (!publicKey) return;
+      const prog = getActiveProgram();
+      if (!prog) return;
+
+      try {
+        const session = state.gameSession;
+        if (!session) return;
+
+        const opponentKey = session.playerOne.equals(publicKey)
+          ? session.playerTwo
+          : session.playerOne;
+        if (!opponentKey) return;
+
+        const [gameSessionPda] = getGameSessionPda(gameId);
+        const [boardOnePda] = getPlayerBoardPda(gameId, session.playerOne);
+        const [boardTwoPda] = getPlayerBoardPda(gameId, opponentKey);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (prog.methods as any)
+          .checkWinner(gameId)
+          .accounts({
+            gameSession: gameSessionPda,
+            boardOne: boardOnePda,
+            boardTwo: boardTwoPda,
+          })
+          .rpc(RPC_OPTS);
+
+        const updated = await fetchGameSession(gameId);
+        patch({ gameSession: updated });
+      } catch (err) {
+        console.warn("check_winner failed:", err);
+      }
+    },
+    [
+      publicKey,
+      getActiveProgram,
+      state.gameSession,
+      getGameSessionPda,
+      getPlayerBoardPda,
+      fetchGameSession,
+    ]
+  );
+
+  // 7. undelegate from ER + commit final state (ER → L1)
+  const undelegateFromER = useCallback(async () => {
+    if (!publicKey || !signTransaction) throw new Error("wallet not connected");
+    if (!state.gameId || !state.gameSession) throw new Error("no game");
+    patch({ isLoading: true, error: null });
+
+    try {
+      const session = state.gameSession;
+      const opponentKey = session.playerOne.equals(publicKey)
+        ? session.playerTwo
+        : session.playerOne;
+
+      if (opponentKey) {
+        const erConn = getErConnection();
+        await commitAndUndelegateAll(
+          erConn,
+          publicKey,
+          state.gameId,
+          session.playerOne,
+          opponentKey,
+          signTransaction
+        );
+      }
+
+      erProgramRef.current = null;
+      patch({ isDelegated: false, isLoading: false });
+      console.log("undelegation complete, state back on L1");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      patch({ error: msg, isLoading: false });
+      throw err;
+    }
+  }, [publicKey, signTransaction, state.gameId, state.gameSession]);
+
+  // 8. finalize game (L1)
+  const finalizeGame = useCallback(
+    async (gameId: BN) => {
+      if (!program) throw new Error("wallet not connected");
+      patch({ isLoading: true, error: null });
+
+      try {
+        const [gameSessionPda] = getGameSessionPda(gameId);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (program.methods as any)
+          .finalizeGame(gameId)
+          .accounts({ gameSession: gameSessionPda })
+          .rpc(RPC_OPTS);
+
+        const session = await fetchGameSession(gameId);
+        patch({ gameSession: session, isLoading: false });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        patch({ error: msg, isLoading: false });
+        throw err;
+      }
+    },
+    [program, getGameSessionPda, fetchGameSession]
+  );
+
+  // 9. reveal opponent grid from TEE after game ends
+  const revealOpponentGrid = useCallback(async (): Promise<number[] | null> => {
+    if (!publicKey || !signMessage || !state.gameId || !state.gameSession)
+      return null;
+
+    try {
+      const token = await authenticateWithTee(publicKey, signMessage);
+      const session = state.gameSession;
+      const opponentKey = session.playerOne.equals(publicKey)
+        ? session.playerTwo
+        : session.playerOne;
+      if (!opponentKey) return null;
+
+      const gameIdHex = Buffer.from(state.gameId.toArray("le", 8)).toString(
+        "hex"
+      );
+      const result = await revealGrid(token, gameIdHex, opponentKey.toBase58());
+      return result?.grid ?? null;
+    } catch (err) {
+      console.warn("tee reveal failed:", err);
+      return null;
+    }
+  }, [publicKey, signMessage, state.gameId, state.gameSession]);
+
+  // ---------- derived helpers ----------
+
+  const gameStateIs = (variant: keyof typeof isGameState): boolean => {
+    if (!state.gameSession) return false;
+    return isGameState[variant](state.gameSession.gameState);
+  };
+
+  const isMyTurn = (): boolean => {
+    if (!state.gameSession || !publicKey) return false;
+    return state.gameSession.currentTurn.equals(publicKey);
+  };
+
+  const getWinner = (): string | null => {
+    if (!state.gameSession?.winner) return null;
+    return state.gameSession.winner.toBase58();
+  };
+
+  const amIWinner = (): boolean => {
+    if (!state.gameSession?.winner || !publicKey) return false;
+    return state.gameSession.winner.equals(publicKey);
+  };
+
+  const getOwnCellStates = (): number[] => {
+    if (!state.ownBoard) return new Array(BOARD_SIZE).fill(CellState.Unknown);
+    return Array.from(state.ownBoard.cellStates);
+  };
+
+  const getOpponentCellStates = (): number[] => {
+    if (!state.opponentBoard)
+      return new Array(BOARD_SIZE).fill(CellState.Unknown);
+    return Array.from(state.opponentBoard.cellStates);
+  };
+
+  const getOpponentHitsReceived = (): number =>
+    state.opponentBoard?.hitsReceived ?? 0;
+  const getOwnHitsReceived = (): number => state.ownBoard?.hitsReceived ?? 0;
+
+  const bothShipsPlaced = (): boolean =>
+    (state.ownBoard?.shipsPlaced ?? false) &&
+    (state.opponentBoard?.shipsPlaced ?? false);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  const reset = useCallback(() => {
+    stopPolling();
+    secretRef.current = null;
+    erProgramRef.current = null;
+    clearTeeAuth();
+    setState({
+      gameId: null,
+      gameSession: null,
+      ownBoard: null,
+      opponentBoard: null,
+      shipGrid: null,
+      shipCells: [],
+      error: null,
+      isLoading: false,
+      isDelegated: false,
+      teeAuthenticated: false,
+    });
+  }, [stopPolling]);
+
+  return {
+    ...state,
+    isConnected,
+    publicKey,
+    connection,
+    signMessage,
+    signTransaction,
+    // instructions
+    initializeGame,
+    joinGame,
+    initializePlayerBoard,
+    autoPlaceShips,
+    delegateToER,
+    processAttack,
+    checkWinner,
+    undelegateFromER,
+    finalizeGame,
+    // tee
+    authenticateTee,
+    revealOpponentGrid,
+    // derived
+    gameStateIs,
+    isMyTurn,
+    getWinner,
+    amIWinner,
+    getOwnCellStates,
+    getOpponentCellStates,
+    getOpponentHitsReceived,
+    getOwnHitsReceived,
+    bothShipsPlaced,
+    // control
+    startPolling,
+    stopPolling,
+    reset,
+  };
+};
