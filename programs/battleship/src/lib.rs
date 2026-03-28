@@ -85,6 +85,25 @@ pub mod battleship {
         Ok(())
     }
 
+    // start the game once both players have placed ships
+    pub fn start_game(ctx: Context<StartGame>, _game_id: u64) -> Result<()> {
+        let game = &mut ctx.accounts.game_session;
+        let board_one = &ctx.accounts.board_one;
+        let board_two = &ctx.accounts.board_two;
+
+        require!(
+            game.game_state == GameState::Initialized,
+            GameError::GameAlreadyStarted
+        );
+        require!(game.player_two.is_some(), GameError::GameNotInitialized);
+        require!(board_one.ships_placed, GameError::ShipsNotPlaced);
+        require!(board_two.ships_placed, GameError::ShipsNotPlaced);
+
+        game.game_state = GameState::InProgress;
+
+        Ok(())
+    }
+
     // process an attack on the opponent's board
     pub fn process_attack(
         ctx: Context<ProcessAttack>,
@@ -247,6 +266,17 @@ pub struct AutoPlaceShips<'info> {
     pub player_board: Account<'info, PlayerBoard>,
     #[account(mut)]
     pub player: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(game_id: u64)]
+pub struct StartGame<'info> {
+    #[account(mut, seeds = [GAME_SESSION_SEED, &game_id.to_le_bytes()], bump)]
+    pub game_session: Account<'info, GameSession>,
+    // player one's board
+    pub board_one: Account<'info, PlayerBoard>,
+    // player two's board
+    pub board_two: Account<'info, PlayerBoard>,
 }
 
 #[derive(Accounts)]

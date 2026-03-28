@@ -1,6 +1,7 @@
 // battleship program types — matches programs/battleship/src/state.rs
 
 import type { PublicKey } from "@solana/web3.js";
+import type { BN } from "@coral-xyz/anchor";
 
 // program id from anchor deploy
 export const PROGRAM_ID = "8tX8EQWsszJhLvbjws2cechrWR9MVxBG4sb3iTU2coJY";
@@ -21,13 +22,6 @@ export const CellState = {
 } as const;
 export type CellState = (typeof CellState)[keyof typeof CellState];
 
-// game lifecycle — matches GameState in state.rs
-export const GameState = {
-  Initialized: { initialized: {} },
-  ShipsPlaced: { shipsPlaced: {} },
-  InProgress: { inProgress: {} },
-  Finished: { finished: {} },
-} as const;
 // anchor deserializes rust enums as { variantName: {} } objects
 export type GameStateValue =
   | { initialized: Record<string, never> }
@@ -45,7 +39,7 @@ export const isGameState = {
 
 // game session account — matches GameSession in state.rs
 export interface GameSession {
-  gameId: bigint; // u64
+  gameId: BN;
   playerOne: PublicKey;
   playerTwo: PublicKey | null;
   currentTurn: PublicKey;
@@ -55,7 +49,7 @@ export interface GameSession {
 
 // player board account — matches PlayerBoard in state.rs
 export interface PlayerBoard {
-  gameId: bigint; // u64
+  gameId: BN;
   player: PublicKey;
   gridCommitment: number[]; // [u8; 32]
   cellStates: number[]; // [u8; 100]

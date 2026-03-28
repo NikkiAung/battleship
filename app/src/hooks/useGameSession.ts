@@ -24,12 +24,7 @@ import {
   createErProvider,
   getErConnection,
 } from "../services/delegation";
-import {
-  authenticateWithTee,
-  storeEncryptedGrid,
-  revealGrid,
-  clearTeeAuth,
-} from "../services/tee";
+import { clearTeeAuth } from "../services/tee";
 import idl from "../idl/battleship.json";
 
 export interface GameSessionState {
@@ -42,7 +37,6 @@ export interface GameSessionState {
   error: string | null;
   isLoading: boolean;
   isDelegated: boolean;
-  teeAuthenticated: boolean;
 }
 
 const RPC_OPTS = { skipPreflight: true, commitment: "confirmed" as const };
@@ -50,7 +44,7 @@ const RPC_OPTS = { skipPreflight: true, commitment: "confirmed" as const };
 export const useGameSession = () => {
   const { program, provider, getGameSessionPda, getPlayerBoardPda } =
     useAnchorProgram();
-  const { publicKey, isConnected, connection, signMessage, signTransaction } =
+  const { publicKey, isConnected, connection, signTransaction } =
     useSolanaWallet();
 
   const [state, setState] = useState<GameSessionState>({
@@ -63,12 +57,10 @@ export const useGameSession = () => {
     error: null,
     isLoading: false,
     isDelegated: false,
-    teeAuthenticated: false,
   });
 
   const secretRef = useRef<Uint8Array | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // er program instance for gameplay txs after delegation
   const erProgramRef = useRef<Program<Idl> | null>(null);
 
   const patch = (p: Partial<GameSessionState>) =>
@@ -76,7 +68,6 @@ export const useGameSession = () => {
 
   // ---------- fetch helpers ----------
 
-  // fetch from either L1 or ER depending on delegation status
   const getActiveProgram = useCallback((): Program<Idl> | null => {
     if (state.isDelegated && erProgramRef.current) return erProgramRef.current;
     return program;
@@ -146,18 +137,6 @@ export const useGameSession = () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, []);
-
-  // ---------- tee auth ----------
-
-  const authenticateTee = useCallback(async () => {
-    if (!publicKey || !signMessage) return;
-    try {
-      await authenticateWithTee(publicKey, signMessage);
-      patch({ teeAuthenticated: true });
-    } catch (err) {
-      console.warn("tee auth failed (non-fatal):", err);
-    }
-  }, [publicKey, signMessage]);
 
   // ---------- er setup ----------
 
@@ -275,7 +254,7 @@ export const useGameSession = () => {
     [program, publicKey, getGameSessionPda, getPlayerBoardPda, fetchPlayerBoard]
   );
 
-  // 3. auto place ships (L1) + store encrypted grid in TEE
+  // 3. auto place ships (L1)
   const autoPlaceShips = useCallback(
     async (gameId: BN) => {
       if (!program || !publicKey) throw new Error("wallet not connected");
@@ -298,25 +277,6 @@ export const useGameSession = () => {
           })
           .rpc(RPC_OPTS);
 
-        // store encrypted grid in TEE if authenticated
-        if (state.teeAuthenticated && signMessage) {
-          try {
-            const token = await authenticateWithTee(publicKey, signMessage);
-            const gameIdHex = Buffer.from(gameId.toArray("le", 8)).toString(
-              "hex"
-            );
-            await storeEncryptedGrid(
-              token,
-              gameIdHex,
-              publicKey.toBase58(),
-              Array.from(encrypted),
-              Array.from(commitment)
-            );
-          } catch (err) {
-            console.warn("tee store failed (non-fatal):", err);
-          }
-        }
-
         const cells = getShipCells(grid);
         const ownBoard = await fetchPlayerBoard(gameId, publicKey);
         patch({ shipGrid: grid, shipCells: cells, ownBoard, isLoading: false });
@@ -326,17 +286,52 @@ export const useGameSession = () => {
         throw err;
       }
     },
+    [program, publicKey, getPlayerBoardPda, fetchPlayerBoard]
+  );
+
+  // 4. start game — transitions Initialized → InProgress (L1)
+  const startGame = useCallback(
+    async (gameId: BN) => {
+      if (!program || !publicKey) throw new Error("wallet not connected");
+      patch({ isLoading: true, error: null });
+
+      try {
+        const session = state.gameSession;
+        if (!session?.playerTwo) throw new Error("no opponent yet");
+
+        const [gameSessionPda] = getGameSessionPda(gameId);
+        const [boardOnePda] = getPlayerBoardPda(gameId, session.playerOne);
+        const [boardTwoPda] = getPlayerBoardPda(gameId, session.playerTwo);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (program.methods as any)
+          .startGame(gameId)
+          .accounts({
+            gameSession: gameSessionPda,
+            boardOne: boardOnePda,
+            boardTwo: boardTwoPda,
+          })
+          .rpc(RPC_OPTS);
+
+        const updated = await fetchGameSession(gameId);
+        patch({ gameSession: updated, isLoading: false });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        patch({ error: msg, isLoading: false });
+        throw err;
+      }
+    },
     [
       program,
       publicKey,
+      state.gameSession,
+      getGameSessionPda,
       getPlayerBoardPda,
-      fetchPlayerBoard,
-      state.teeAuthenticated,
-      signMessage,
+      fetchGameSession,
     ]
   );
 
-  // 4. delegate game to ER (L1 → ER)
+  // 5. delegate game to ER (L1 → ER)
   const delegateToER = useCallback(
     async (gameId: BN) => {
       if (!program || !publicKey || !signTransaction)
@@ -344,10 +339,8 @@ export const useGameSession = () => {
       patch({ isLoading: true, error: null });
 
       try {
-        // delegate game_session via anchor instruction
         await delegateGameSession(program, publicKey, gameId);
 
-        // delegate both player boards via raw SDK instruction
         const session = state.gameSession;
         if (session?.playerTwo) {
           await delegatePlayerBoard(
@@ -366,15 +359,12 @@ export const useGameSession = () => {
           );
         }
 
-        // setup ER program for gameplay
         setupErProgram();
-
         patch({ isDelegated: true, isLoading: false });
         console.log("delegation complete, gameplay now in ER");
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error("delegation failed:", msg);
-        // fallback: continue on L1
         patch({
           error: `delegation failed, playing on L1: ${msg}`,
           isLoading: false,
@@ -391,9 +381,13 @@ export const useGameSession = () => {
     ]
   );
 
-  // 5. process attack (ER if delegated, L1 fallback)
+  // 6. process attack (ER if delegated, L1 fallback)
+  // the attacker knows their own ship grid locally and can determine hit/miss
+  // for the OPPONENT's board, the attacker passes is_hit — in a full TEE setup
+  // the ER validator would verify this against the encrypted grid
+  // for now the attacker is trusted (game integrity relies on ER privacy)
   const processAttack = useCallback(
-    async (gameId: BN, cell: number, isHit: boolean) => {
+    async (gameId: BN, cell: number) => {
       if (!publicKey) throw new Error("wallet not connected");
       const prog = getActiveProgram();
       if (!prog) throw new Error("no program");
@@ -410,6 +404,12 @@ export const useGameSession = () => {
 
         const [gameSessionPda] = getGameSessionPda(gameId);
         const [targetBoardPda] = getPlayerBoardPda(gameId, opponentKey);
+
+        // for now, the program trusts the is_hit param
+        // in a full implementation the TEE/ER validator would check the encrypted grid
+        // we default to false; the opponent's client will correct via their local grid
+        // TODO: implement TEE-verified hit detection
+        const isHit = false;
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await (prog.methods as any)
@@ -441,7 +441,7 @@ export const useGameSession = () => {
     ]
   );
 
-  // 6. check winner (ER or L1)
+  // 7. check winner (ER or L1)
   const checkWinner = useCallback(
     async (gameId: BN) => {
       if (!publicKey) return;
@@ -487,7 +487,7 @@ export const useGameSession = () => {
     ]
   );
 
-  // 7. undelegate from ER + commit final state (ER → L1)
+  // 8. undelegate from ER (ER → L1)
   const undelegateFromER = useCallback(async () => {
     if (!publicKey || !signTransaction) throw new Error("wallet not connected");
     if (!state.gameId || !state.gameSession) throw new Error("no game");
@@ -521,7 +521,7 @@ export const useGameSession = () => {
     }
   }, [publicKey, signTransaction, state.gameId, state.gameSession]);
 
-  // 8. finalize game (L1)
+  // 9. finalize game (L1)
   const finalizeGame = useCallback(
     async (gameId: BN) => {
       if (!program) throw new Error("wallet not connected");
@@ -546,30 +546,6 @@ export const useGameSession = () => {
     },
     [program, getGameSessionPda, fetchGameSession]
   );
-
-  // 9. reveal opponent grid from TEE after game ends
-  const revealOpponentGrid = useCallback(async (): Promise<number[] | null> => {
-    if (!publicKey || !signMessage || !state.gameId || !state.gameSession)
-      return null;
-
-    try {
-      const token = await authenticateWithTee(publicKey, signMessage);
-      const session = state.gameSession;
-      const opponentKey = session.playerOne.equals(publicKey)
-        ? session.playerTwo
-        : session.playerOne;
-      if (!opponentKey) return null;
-
-      const gameIdHex = Buffer.from(state.gameId.toArray("le", 8)).toString(
-        "hex"
-      );
-      const result = await revealGrid(token, gameIdHex, opponentKey.toBase58());
-      return result?.grid ?? null;
-    } catch (err) {
-      console.warn("tee reveal failed:", err);
-      return null;
-    }
-  }, [publicKey, signMessage, state.gameId, state.gameSession]);
 
   // ---------- derived helpers ----------
 
@@ -634,7 +610,6 @@ export const useGameSession = () => {
       error: null,
       isLoading: false,
       isDelegated: false,
-      teeAuthenticated: false,
     });
   }, [stopPolling]);
 
@@ -642,22 +617,17 @@ export const useGameSession = () => {
     ...state,
     isConnected,
     publicKey,
-    connection,
-    signMessage,
-    signTransaction,
     // instructions
     initializeGame,
     joinGame,
     initializePlayerBoard,
     autoPlaceShips,
+    startGame,
     delegateToER,
     processAttack,
     checkWinner,
     undelegateFromER,
     finalizeGame,
-    // tee
-    authenticateTee,
-    revealOpponentGrid,
     // derived
     gameStateIs,
     isMyTurn,

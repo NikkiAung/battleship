@@ -1,11 +1,6 @@
-// phase 4: tee validator integration
-// uses magicblock tee validator at tee.magicblock.app for:
-//   1. auth token acquisition (challenge/sign/login)
-//   2. encrypted ship grid storage and reveal
-//
-// NOTE: we implement the auth flow directly instead of importing from the
-// SDK barrel, because the barrel re-exports @phala/dcap-qvl which requires
-// Node.js native modules and crashes in the browser.
+// tee validator integration
+// uses magicblock tee validator for ER integrity verification
+// the tee ensures the ephemeral rollup validator runs in a genuine enclave
 
 import type { PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
@@ -20,12 +15,11 @@ let tokenExpiresAt = 0;
 const SESSION_DURATION = 1000 * 60 * 60 * 24 * 30; // 30 days
 
 // get an auth token from the tee validator
-// implements the same challenge/sign/login flow as the SDK's getAuthToken
+// implements the challenge/sign/login flow from the SDK's getAuthToken
 export async function authenticateWithTee(
   publicKey: PublicKey,
   signMessage: (message: Uint8Array) => Promise<Uint8Array>
 ): Promise<string> {
-  // return cached token if still valid (with 60s buffer)
   if (cachedToken && Date.now() < tokenExpiresAt - 60_000) {
     return cachedToken;
   }
@@ -64,60 +58,6 @@ export async function authenticateWithTee(
   tokenExpiresAt = authJson.expiresAt ?? Date.now() + SESSION_DURATION;
   console.log("tee auth token acquired, expires:", new Date(tokenExpiresAt));
   return cachedToken!;
-}
-
-// store encrypted ship grid in the tee validator
-export async function storeEncryptedGrid(
-  token: string,
-  gameId: string,
-  playerPubkey: string,
-  encryptedGrid: number[],
-  commitment: number[]
-): Promise<void> {
-  const response = await fetch(`${TEE_RPC_URL}/store`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      gameId,
-      player: playerPubkey,
-      encryptedGrid,
-      commitment,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`tee store failed (${response.status}): ${body}`);
-  }
-  console.log("encrypted grid stored in tee for game:", gameId);
-}
-
-// request the tee to reveal a player's ship grid after game ends
-export async function revealGrid(
-  token: string,
-  gameId: string,
-  playerPubkey: string
-): Promise<{ grid: number[]; commitment: number[] } | null> {
-  const response = await fetch(`${TEE_RPC_URL}/reveal`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ gameId, player: playerPubkey }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    console.warn(`tee reveal failed (${response.status}): ${body}`);
-    return null;
-  }
-
-  const data = await response.json();
-  return { grid: data.grid, commitment: data.commitment };
 }
 
 // clear cached auth state

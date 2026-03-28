@@ -7,47 +7,39 @@ import { GameFinalization } from "./GameFinalization";
 import { useGameSession } from "../hooks/useGameSession";
 import "./Game.css";
 
-// game phases (ui state machine)
 type GamePhase = "lobby" | "placement" | "waiting" | "battle" | "finished";
 
 // main game component — orchestrates all phases
 export const Game: FC = () => {
   const gs = useGameSession();
 
-  // ---- derive ui phase from on-chain state ----
+  // derive ui phase from on-chain state
   const derivePhase = (): GamePhase => {
     if (!gs.gameId || !gs.gameSession) return "lobby";
     if (gs.gameStateIs("finished")) return "finished";
     if (gs.gameStateIs("inProgress")) return "battle";
+    // both placed but not yet InProgress
     if (gs.bothShipsPlaced()) return "waiting";
+    // own ships not placed yet
     if (!gs.ownBoard?.shipsPlaced) return "placement";
+    // own ships placed, waiting for opponent
     return "waiting";
   };
 
   const phase = derivePhase();
 
-  // ---- tee auth on wallet connect ----
-  useEffect(() => {
-    if (gs.isConnected && !gs.teeAuthenticated) {
-      gs.authenticateTee();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gs.isConnected]);
-
-  // ---- auto-delegate when both players have placed ships ----
+  // auto-start game when both players placed ships and game is still Initialized
   useEffect(() => {
     if (
       phase === "waiting" &&
       gs.bothShipsPlaced() &&
       gs.gameId &&
       gs.gameStateIs("initialized") &&
-      !gs.isDelegated &&
       !gs.isLoading &&
       gs.publicKey &&
       gs.gameSession?.playerOne.equals(gs.publicKey)
     ) {
-      // game creator triggers delegation
-      gs.delegateToER(gs.gameId).catch(console.error);
+      gs.startGame(gs.gameId).catch(console.error);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -57,7 +49,7 @@ export const Game: FC = () => {
     gs.opponentBoard?.shipsPlaced,
   ]);
 
-  // ---- auto-check winner after each attack ----
+  // auto-check winner after each attack
   useEffect(() => {
     if (phase === "battle" && gs.gameId) {
       const ownHits = gs.getOwnHitsReceived();
@@ -69,7 +61,7 @@ export const Game: FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gs.ownBoard?.hitsReceived, gs.opponentBoard?.hitsReceived]);
 
-  // ---- auto-undelegate when game finishes ----
+  // auto-undelegate when game finishes
   useEffect(() => {
     if (phase === "finished" && gs.isDelegated && !gs.isLoading) {
       gs.undelegateFromER().catch(console.error);
@@ -112,17 +104,14 @@ export const Game: FC = () => {
 
   const handleReady = async () => {
     // ships are already on-chain from autoPlaceShips
-    // delegation happens automatically in the effect above
+    // start_game triggers automatically via the effect when both players ready
     console.log("ships confirmed, waiting for opponent...");
   };
 
   const handleAttack = async (cellIndex: number) => {
     if (!gs.gameId || !gs.isMyTurn()) return;
     try {
-      // in ER with TEE, the hit/miss is determined by the TEE validator
-      // which has access to the encrypted ship grid
-      // for now we pass false; the program records it accordingly
-      await gs.processAttack(gs.gameId, cellIndex, false);
+      await gs.processAttack(gs.gameId, cellIndex);
     } catch (err) {
       console.error("attack failed:", err);
     }
@@ -131,16 +120,10 @@ export const Game: FC = () => {
   const handleFinalize = async () => {
     if (!gs.gameId) return;
     try {
-      // undelegate if still in ER
       if (gs.isDelegated) {
         await gs.undelegateFromER();
       }
       await gs.finalizeGame(gs.gameId);
-      // try to reveal opponent grid from TEE
-      const revealed = await gs.revealOpponentGrid();
-      if (revealed) {
-        console.log("opponent grid revealed from TEE:", revealed);
-      }
     } catch (err) {
       console.error("finalize failed:", err);
     }
@@ -150,7 +133,6 @@ export const Game: FC = () => {
     gs.reset();
   };
 
-  // game id hex for display
   const gameIdHex = gs.gameId
     ? Buffer.from(gs.gameId.toArray("le", 8)).toString("hex")
     : null;
@@ -182,17 +164,12 @@ export const Game: FC = () => {
           <h2>Waiting for opponent...</h2>
           <p>Share this Game ID with your opponent:</p>
           <code className="game-id-code">{gameIdHex}</code>
-          {gs.bothShipsPlaced() && !gs.isDelegated && (
-            <p className="ready-text">
-              Both players ready! Delegating to ER...
-            </p>
+          {gs.bothShipsPlaced() && gs.gameStateIs("initialized") && (
+            <p className="ready-text">Both players ready! Starting game...</p>
           )}
           {gs.isDelegated && (
-            <p className="ready-text">
-              Delegated to Ephemeral Rollup! Starting game...
-            </p>
+            <p className="ready-text">Playing in Ephemeral Rollup</p>
           )}
-          {gs.teeAuthenticated && <p className="tee-badge">TEE Verified</p>}
         </div>
       )}
 
