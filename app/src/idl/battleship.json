@@ -65,6 +65,15 @@
           "type": "u64"
         },
         {
+          "name": "ship_positions",
+          "type": {
+            "array": [
+              "u8",
+              100
+            ]
+          }
+        },
+        {
           "name": "encrypted_grid",
           "type": {
             "array": [
@@ -596,10 +605,6 @@
         {
           "name": "cell",
           "type": "u8"
-        },
-        {
-          "name": "is_hit",
-          "type": "bool"
         }
       ]
     },
@@ -1020,6 +1025,15 @@
               "array": [
                 "u8",
                 112
+              ]
+            }
+          },
+          {
+            "name": "ship_positions",
+            "type": {
+              "array": [
+                "u8",
+                100
               ]
             }
           },

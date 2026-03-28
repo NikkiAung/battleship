@@ -62,15 +62,17 @@ pub mod battleship {
         board.cell_states = [0u8; BOARD_SIZE];
         board.hits_received = 0;
         board.ship_grid_encrypted = [0u8; ENCRYPTED_GRID_SIZE];
+        board.ship_positions = [0u8; BOARD_SIZE];
         board.ships_placed = false;
 
         Ok(())
     }
 
-    // auto place ships on the board, stores encrypted grid
+    // place ships on the board: stores raw positions, encrypted grid, and commitment
     pub fn auto_place_ships(
         ctx: Context<AutoPlaceShips>,
         _game_id: u64,
+        ship_positions: [u8; BOARD_SIZE],
         encrypted_grid: [u8; ENCRYPTED_GRID_SIZE],
         grid_commitment: [u8; 32],
     ) -> Result<()> {
@@ -78,6 +80,14 @@ pub mod battleship {
 
         require!(!board.ships_placed, GameError::ShipsAlreadyPlaced);
 
+        // validate ship count
+        let ship_count: u8 = ship_positions.iter().filter(|&&v| v == 1).count() as u8;
+        require!(
+            ship_count == TOTAL_SHIP_CELLS,
+            GameError::InvalidShipPlacement
+        );
+
+        board.ship_positions = ship_positions;
         board.ship_grid_encrypted = encrypted_grid;
         board.grid_commitment = grid_commitment;
         board.ships_placed = true;
@@ -105,12 +115,8 @@ pub mod battleship {
     }
 
     // process an attack on the opponent's board
-    pub fn process_attack(
-        ctx: Context<ProcessAttack>,
-        _game_id: u64,
-        cell: u8,
-        is_hit: bool,
-    ) -> Result<()> {
+    // hit/miss is determined on-chain from ship_positions — no client trust needed
+    pub fn process_attack(ctx: Context<ProcessAttack>, _game_id: u64, cell: u8) -> Result<()> {
         let game = &mut ctx.accounts.game_session;
         let target_board = &mut ctx.accounts.target_board;
         let attacker = ctx.accounts.attacker.key();
@@ -126,7 +132,9 @@ pub mod battleship {
             GameError::CellAlreadyAttacked
         );
 
-        // record hit or miss
+        // determine hit or miss from the target board's ship positions
+        let is_hit = target_board.ship_positions[cell as usize] == 1;
+
         if is_hit {
             target_board.cell_states[cell as usize] = CellState::Hit as u8;
             target_board.hits_received += 1;

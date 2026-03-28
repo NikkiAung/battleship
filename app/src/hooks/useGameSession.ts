@@ -270,7 +270,12 @@ export const useGameSession = () => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await (program.methods as any)
-          .autoPlaceShips(gameId, Array.from(encrypted), Array.from(commitment))
+          .autoPlaceShips(
+            gameId,
+            Array.from(grid),
+            Array.from(encrypted),
+            Array.from(commitment)
+          )
           .accounts({
             playerBoard: playerBoardPda,
             player: publicKey,
@@ -315,6 +320,11 @@ export const useGameSession = () => {
 
         const updated = await fetchGameSession(gameId);
         patch({ gameSession: updated, isLoading: false });
+
+        // auto-delegate to ER after starting the game
+        if (updated) {
+          await doDelegation(gameId, updated);
+        }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         patch({ error: msg, isLoading: false });
@@ -331,61 +341,54 @@ export const useGameSession = () => {
     ]
   );
 
-  // 5. delegate game to ER (L1 → ER)
+  // internal delegation helper
+  const doDelegation = async (gameId: BN, session: GameSession) => {
+    if (!program || !publicKey || !signTransaction) return;
+
+    try {
+      await delegateGameSession(program, publicKey, gameId);
+
+      if (session.playerTwo) {
+        await delegatePlayerBoard(
+          connection,
+          publicKey,
+          gameId,
+          session.playerOne,
+          signTransaction
+        );
+        await delegatePlayerBoard(
+          connection,
+          publicKey,
+          gameId,
+          session.playerTwo,
+          signTransaction
+        );
+      }
+
+      setupErProgram();
+      patch({ isDelegated: true });
+      console.log("delegation complete, gameplay now in ER");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("delegation failed:", msg);
+      patch({ error: `delegation failed, playing on L1: ${msg}` });
+    }
+  };
+
+  // 5. delegate game to ER (L1 → ER) — callable manually
   const delegateToER = useCallback(
     async (gameId: BN) => {
-      if (!program || !publicKey || !signTransaction)
-        throw new Error("wallet not connected");
+      if (!state.gameSession) throw new Error("no game session");
       patch({ isLoading: true, error: null });
-
-      try {
-        await delegateGameSession(program, publicKey, gameId);
-
-        const session = state.gameSession;
-        if (session?.playerTwo) {
-          await delegatePlayerBoard(
-            connection,
-            publicKey,
-            gameId,
-            session.playerOne,
-            signTransaction
-          );
-          await delegatePlayerBoard(
-            connection,
-            publicKey,
-            gameId,
-            session.playerTwo,
-            signTransaction
-          );
-        }
-
-        setupErProgram();
-        patch({ isDelegated: true, isLoading: false });
-        console.log("delegation complete, gameplay now in ER");
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error("delegation failed:", msg);
-        patch({
-          error: `delegation failed, playing on L1: ${msg}`,
-          isLoading: false,
-        });
-      }
+      await doDelegation(gameId, state.gameSession);
+      patch({ isLoading: false });
     },
-    [
-      program,
-      publicKey,
-      signTransaction,
-      connection,
-      state.gameSession,
-      setupErProgram,
-    ]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.gameSession]
   );
 
   // 6. process attack (ER if delegated, L1 fallback)
-  // the attacker knows their own ship grid locally and can determine hit/miss
-  // for the OPPONENT's board, the attacker passes is_hit — in a full TEE setup
-  // the ER validator would verify this against the encrypted grid
-  // for now the attacker is trusted (game integrity relies on ER privacy)
+  // hit/miss is determined on-chain from ship_positions — no client trust needed
   const processAttack = useCallback(
     async (gameId: BN, cell: number) => {
       if (!publicKey) throw new Error("wallet not connected");
@@ -405,15 +408,9 @@ export const useGameSession = () => {
         const [gameSessionPda] = getGameSessionPda(gameId);
         const [targetBoardPda] = getPlayerBoardPda(gameId, opponentKey);
 
-        // for now, the program trusts the is_hit param
-        // in a full implementation the TEE/ER validator would check the encrypted grid
-        // we default to false; the opponent's client will correct via their local grid
-        // TODO: implement TEE-verified hit detection
-        const isHit = false;
-
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await (prog.methods as any)
-          .processAttack(gameId, cell, isHit)
+          .processAttack(gameId, cell)
           .accounts({
             gameSession: gameSessionPda,
             targetBoard: targetBoardPda,

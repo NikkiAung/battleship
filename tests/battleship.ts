@@ -19,7 +19,7 @@ const ENCRYPTED_GRID_SIZE = 112;
 // Account sizes (excluding 8-byte Anchor discriminator)
 const GAME_SESSION_DATA_SIZE = 8 + 32 + 33 + 32 + 1 + 33; // 139
 const PLAYER_BOARD_DATA_SIZE =
-  8 + 32 + 32 + BOARD_SIZE + 1 + ENCRYPTED_GRID_SIZE + 1; // 286
+  8 + 32 + 32 + BOARD_SIZE + 1 + ENCRYPTED_GRID_SIZE + BOARD_SIZE + 1; // 386
 
 // Error codes (Anchor custom errors start at 6000)
 const ERROR_CODES = {
@@ -163,9 +163,9 @@ describe("battleship", () => {
     });
 
     it("PlayerBoard SIZE matches expected layout", () => {
-      const expected = 8 + 32 + 32 + 100 + 1 + 112 + 1;
+      const expected = 8 + 32 + 32 + 100 + 1 + 112 + 100 + 1;
       expect(PLAYER_BOARD_DATA_SIZE).to.equal(expected);
-      expect(PLAYER_BOARD_DATA_SIZE).to.equal(286);
+      expect(PLAYER_BOARD_DATA_SIZE).to.equal(386);
     });
 
     it("total account allocation includes 8-byte discriminator", () => {
@@ -173,7 +173,7 @@ describe("battleship", () => {
       const playerBoardTotal = 8 + PLAYER_BOARD_DATA_SIZE;
 
       expect(gameSessionTotal).to.equal(147);
-      expect(playerBoardTotal).to.equal(294);
+      expect(playerBoardTotal).to.equal(394);
     });
   });
 
@@ -641,6 +641,212 @@ describe("battleship", () => {
         gameSessionPdaKey
       );
       expect(gameSession.gameState).to.deep.equal({ initialized: {} });
+    });
+  });
+
+  // ── auto_place_ships + start_game + process_attack ──
+
+  describe("full game flow", () => {
+    let gameId: number;
+    let gameSessionPdaKey: PublicKey;
+    let playerTwo: Keypair;
+    let board1Pda: PublicKey;
+    let board2Pda: PublicKey;
+
+    // generate a valid ship grid with 17 cells
+    function makeShipGrid(): number[] {
+      const grid = new Array(BOARD_SIZE).fill(0);
+      // carrier (5) at row 0, cols 0-4
+      for (let i = 0; i < 5; i++) grid[i] = 1;
+      // battleship (4) at row 1, cols 0-3
+      for (let i = 10; i < 14; i++) grid[i] = 1;
+      // cruiser (3) at row 2, cols 0-2
+      for (let i = 20; i < 23; i++) grid[i] = 1;
+      // submarine (3) at row 3, cols 0-2
+      for (let i = 30; i < 33; i++) grid[i] = 1;
+      // destroyer (2) at row 4, cols 0-1
+      for (let i = 40; i < 42; i++) grid[i] = 1;
+      return grid;
+    }
+
+    beforeEach(async () => {
+      gameId = uniqueGameId();
+      [gameSessionPdaKey] = gameSessionPda(programId, gameId);
+      playerTwo = Keypair.generate();
+      await airdrop(connection, playerTwo.publicKey);
+
+      // create game
+      await program.methods
+        .initializeGame(new anchor.BN(gameId))
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          playerOne: provider.wallet.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        } as any)
+        .rpc();
+
+      // create both boards
+      [board1Pda] = playerBoardPda(
+        programId,
+        gameId,
+        provider.wallet.publicKey
+      );
+      [board2Pda] = playerBoardPda(programId, gameId, playerTwo.publicKey);
+
+      await program.methods
+        .initializePlayerBoard(new anchor.BN(gameId))
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          playerBoard: board1Pda,
+          player: provider.wallet.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        } as any)
+        .rpc();
+
+      await program.methods
+        .initializePlayerBoard(new anchor.BN(gameId))
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          playerBoard: board2Pda,
+          player: playerTwo.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        } as any)
+        .signers([playerTwo])
+        .rpc();
+    });
+
+    it("auto_place_ships stores ship positions and marks ships placed", async () => {
+      const grid = makeShipGrid();
+      const encrypted = new Array(ENCRYPTED_GRID_SIZE).fill(0);
+      const commitment = new Array(32).fill(0);
+
+      await program.methods
+        .autoPlaceShips(new anchor.BN(gameId), grid, encrypted, commitment)
+        .accounts({
+          playerBoard: board1Pda,
+          player: provider.wallet.publicKey,
+        } as any)
+        .rpc();
+
+      const board = await program.account.playerBoard.fetch(board1Pda);
+      expect(board.shipsPlaced).to.be.true;
+      expect(board.shipPositions).to.deep.equal(grid);
+    });
+
+    it("start_game transitions Initialized → InProgress when both ships placed", async () => {
+      const grid = makeShipGrid();
+      const encrypted = new Array(ENCRYPTED_GRID_SIZE).fill(0);
+      const commitment = new Array(32).fill(0);
+
+      // both players place ships
+      await program.methods
+        .autoPlaceShips(new anchor.BN(gameId), grid, encrypted, commitment)
+        .accounts({
+          playerBoard: board1Pda,
+          player: provider.wallet.publicKey,
+        } as any)
+        .rpc();
+
+      await program.methods
+        .autoPlaceShips(new anchor.BN(gameId), grid, encrypted, commitment)
+        .accounts({
+          playerBoard: board2Pda,
+          player: playerTwo.publicKey,
+        } as any)
+        .signers([playerTwo])
+        .rpc();
+
+      // start game
+      await program.methods
+        .startGame(new anchor.BN(gameId))
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          boardOne: board1Pda,
+          boardTwo: board2Pda,
+        } as any)
+        .rpc();
+
+      const game = await program.account.gameSession.fetch(gameSessionPdaKey);
+      expect(game.gameState).to.deep.equal({ inProgress: {} });
+    });
+
+    it("process_attack auto-determines hit/miss from ship_positions", async () => {
+      const grid = makeShipGrid();
+      const encrypted = new Array(ENCRYPTED_GRID_SIZE).fill(0);
+      const commitment = new Array(32).fill(0);
+
+      // place ships + start game
+      await program.methods
+        .autoPlaceShips(new anchor.BN(gameId), grid, encrypted, commitment)
+        .accounts({
+          playerBoard: board1Pda,
+          player: provider.wallet.publicKey,
+        } as any)
+        .rpc();
+
+      await program.methods
+        .autoPlaceShips(new anchor.BN(gameId), grid, encrypted, commitment)
+        .accounts({
+          playerBoard: board2Pda,
+          player: playerTwo.publicKey,
+        } as any)
+        .signers([playerTwo])
+        .rpc();
+
+      await program.methods
+        .startGame(new anchor.BN(gameId))
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          boardOne: board1Pda,
+          boardTwo: board2Pda,
+        } as any)
+        .rpc();
+
+      // player one attacks cell 0 on player two's board (ship at 0 → hit)
+      await program.methods
+        .processAttack(new anchor.BN(gameId), 0)
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          targetBoard: board2Pda,
+          attacker: provider.wallet.publicKey,
+        } as any)
+        .rpc();
+
+      const board2 = await program.account.playerBoard.fetch(board2Pda);
+      expect(board2.cellStates[0]).to.equal(2); // Hit
+      expect(board2.hitsReceived).to.equal(1);
+
+      // player two attacks cell 99 on player one's board (no ship → miss)
+      await program.methods
+        .processAttack(new anchor.BN(gameId), 99)
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          targetBoard: board1Pda,
+          attacker: playerTwo.publicKey,
+        } as any)
+        .signers([playerTwo])
+        .rpc();
+
+      const board1 = await program.account.playerBoard.fetch(board1Pda);
+      expect(board1.cellStates[99]).to.equal(1); // Miss
+      expect(board1.hitsReceived).to.equal(0);
+    });
+
+    it("rejects attack when game is not InProgress", async () => {
+      // game is still Initialized — attack should fail
+      try {
+        await program.methods
+          .processAttack(new anchor.BN(gameId), 0)
+          .accounts({
+            gameSession: gameSessionPdaKey,
+            targetBoard: board2Pda,
+            attacker: provider.wallet.publicKey,
+          } as any)
+          .rpc();
+        expect.fail("should have thrown GameNotInProgress");
+      } catch (err: any) {
+        expect(err.error.errorCode.code).to.equal("GameNotInProgress");
+      }
     });
   });
 

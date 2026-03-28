@@ -53,10 +53,11 @@ pub struct PlayerBoard {
     pub cell_states: [u8; BOARD_SIZE],
     pub hits_received: u8,
     pub ship_grid_encrypted: [u8; ENCRYPTED_GRID_SIZE],
+    pub ship_positions: [u8; BOARD_SIZE], // raw grid: 1=ship, 0=water
     pub ships_placed: bool,
 }
 
 impl PlayerBoard {
-    // 8 + 32 + 32 + 100 + 1 + 112 + 1 = 286
-    pub const SIZE: usize = 8 + 32 + 32 + BOARD_SIZE + 1 + ENCRYPTED_GRID_SIZE + 1;
+    // 8 + 32 + 32 + 100 + 1 + 112 + 100 + 1 = 386
+    pub const SIZE: usize = 8 + 32 + 32 + BOARD_SIZE + 1 + ENCRYPTED_GRID_SIZE + BOARD_SIZE + 1;
 }

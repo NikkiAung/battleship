@@ -55,6 +55,7 @@ export interface PlayerBoard {
   cellStates: number[]; // [u8; 100]
   hitsReceived: number; // u8
   shipGridEncrypted: number[]; // [u8; 112]
+  shipPositions: number[]; // [u8; 100] raw grid: 1=ship, 0=water
   shipsPlaced: boolean;
 }
 
