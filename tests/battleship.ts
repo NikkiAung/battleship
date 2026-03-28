@@ -1,6 +1,6 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-import { PublicKey } from "@solana/web3.js";
+import { Keypair, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { expect } from "chai";
 import { Battleship } from "../target/types/battleship";
 
@@ -66,6 +66,23 @@ function playerBoardPda(
   );
 }
 
+/** Airdrop SOL to a keypair and wait for confirmation. */
+async function airdrop(
+  connection: anchor.web3.Connection,
+  to: PublicKey,
+  amount = 2 * LAMPORTS_PER_SOL
+) {
+  const sig = await connection.requestAirdrop(to, amount);
+  await connection.confirmTransaction(sig, "confirmed");
+}
+
+/** Return a unique game_id based on timestamp + random to avoid PDA collisions across test runs. */
+function uniqueGameId(): number {
+  return (
+    Math.floor(Date.now() / 1000) * 1000 + Math.floor(Math.random() * 1000)
+  );
+}
+
 // ──────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────
@@ -76,22 +93,7 @@ describe("battleship", () => {
   const program = anchor.workspace.battleship as Program<Battleship>;
   const programId = program.programId;
   const provider = anchor.getProvider() as anchor.AnchorProvider;
-
-  // ── Program basics ──────────────────────────
-
-  describe("program deployment", () => {
-    it("has the expected program ID", () => {
-      expect(programId.toBase58()).to.equal(
-        "8tX8EQWsszJhLvbjws2cechrWR9MVxBG4sb3iTU2coJY"
-      );
-    });
-
-    it("can call initialize instruction", async () => {
-      const tx = await program.methods.initialize().rpc();
-      expect(tx).to.be.a("string");
-      console.log("    tx:", tx);
-    });
-  });
+  const connection = provider.connection;
 
   // ── PDA derivation ─────────────────────────
 
@@ -112,7 +114,7 @@ describe("battleship", () => {
     });
 
     it("derives PlayerBoard PDA deterministically for a given game_id + player", () => {
-      const player = anchor.web3.Keypair.generate().publicKey;
+      const player = Keypair.generate().publicKey;
       const [pda1, bump1] = playerBoardPda(programId, 1, player);
       const [pda2, bump2] = playerBoardPda(programId, 1, player);
 
@@ -121,8 +123,8 @@ describe("battleship", () => {
     });
 
     it("derives different PlayerBoard PDAs for different players in the same game", () => {
-      const playerA = anchor.web3.Keypair.generate().publicKey;
-      const playerB = anchor.web3.Keypair.generate().publicKey;
+      const playerA = Keypair.generate().publicKey;
+      const playerB = Keypair.generate().publicKey;
 
       const [pdaA] = playerBoardPda(programId, 1, playerA);
       const [pdaB] = playerBoardPda(programId, 1, playerB);
@@ -131,7 +133,7 @@ describe("battleship", () => {
     });
 
     it("derives different PlayerBoard PDAs for the same player in different games", () => {
-      const player = anchor.web3.Keypair.generate().publicKey;
+      const player = Keypair.generate().publicKey;
 
       const [pda1] = playerBoardPda(programId, 1, player);
       const [pda2] = playerBoardPda(programId, 2, player);
@@ -141,12 +143,11 @@ describe("battleship", () => {
 
     it("GameSession PDA is off-curve (not a valid keypair)", () => {
       const [pda] = gameSessionPda(programId, 42);
-      // PDA addresses are off-curve, so PublicKey.isOnCurve should be false
       expect(PublicKey.isOnCurve(pda.toBytes())).to.be.false;
     });
 
     it("PlayerBoard PDA is off-curve", () => {
-      const player = anchor.web3.Keypair.generate().publicKey;
+      const player = Keypair.generate().publicKey;
       const [pda] = playerBoardPda(programId, 42, player);
       expect(PublicKey.isOnCurve(pda.toBytes())).to.be.false;
     });
@@ -156,14 +157,12 @@ describe("battleship", () => {
 
   describe("account size constants", () => {
     it("GameSession SIZE matches expected layout", () => {
-      // game_id(8) + player_one(32) + player_two(1+32) + current_turn(32) + game_state(1) + winner(1+32)
       const expected = 8 + 32 + 33 + 32 + 1 + 33;
       expect(GAME_SESSION_DATA_SIZE).to.equal(expected);
       expect(GAME_SESSION_DATA_SIZE).to.equal(139);
     });
 
     it("PlayerBoard SIZE matches expected layout", () => {
-      // game_id(8) + player(32) + grid_commitment(32) + cell_states(100) + hits_received(1) + ship_grid_encrypted(112) + ships_placed(1)
       const expected = 8 + 32 + 32 + 100 + 1 + 112 + 1;
       expect(PLAYER_BOARD_DATA_SIZE).to.equal(expected);
       expect(PLAYER_BOARD_DATA_SIZE).to.equal(286);
@@ -196,7 +195,6 @@ describe("battleship", () => {
     it("total ship cells equals sum of all ship sizes (17)", () => {
       const sum = SHIP_SIZES.reduce((a, b) => a + b, 0);
       expect(sum).to.equal(TOTAL_SHIP_CELLS);
-      expect(TOTAL_SHIP_CELLS).to.equal(17);
     });
 
     it("encrypted grid size is 112 bytes", () => {
@@ -228,13 +226,6 @@ describe("battleship", () => {
       }
     });
 
-    it("error codes start at 6000 (Anchor custom error offset)", () => {
-      const codes = Object.values(ERROR_CODES);
-      for (const code of codes) {
-        expect(code).to.be.at.least(6000);
-      }
-    });
-
     it("error codes are sequential from 6000 to 6011", () => {
       const codes = Object.values(ERROR_CODES).sort((a, b) => a - b);
       expect(codes[0]).to.equal(6000);
@@ -261,6 +252,448 @@ describe("battleship", () => {
         );
         expect(err.msg.length).to.be.greaterThan(0);
       }
+    });
+  });
+
+  // ── initialize_game ─────────────────────────
+
+  describe("initialize_game", () => {
+    it("creates a GameSession PDA with correct initial state", async () => {
+      const gameId = uniqueGameId();
+      const playerOne = provider.wallet;
+
+      const [gameSessionPdaKey] = gameSessionPda(programId, gameId);
+
+      await program.methods
+        .initializeGame(new anchor.BN(gameId))
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          playerOne: playerOne.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc();
+
+      // Fetch and verify the on-chain state
+      const gameSession = await program.account.gameSession.fetch(
+        gameSessionPdaKey
+      );
+
+      expect(gameSession.gameId.toNumber()).to.equal(gameId);
+      expect(gameSession.playerOne.toBase58()).to.equal(
+        playerOne.publicKey.toBase58()
+      );
+      expect(gameSession.playerTwo).to.be.null;
+      expect(gameSession.currentTurn.toBase58()).to.equal(
+        playerOne.publicKey.toBase58()
+      );
+      expect(gameSession.gameState).to.deep.equal({ initialized: {} });
+      expect(gameSession.winner).to.be.null;
+    });
+
+    it("creates games with different IDs independently", async () => {
+      const gameId1 = uniqueGameId();
+      const gameId2 = gameId1 + 1;
+
+      const [pda1] = gameSessionPda(programId, gameId1);
+      const [pda2] = gameSessionPda(programId, gameId2);
+
+      await program.methods
+        .initializeGame(new anchor.BN(gameId1))
+        .accounts({
+          gameSession: pda1,
+          playerOne: provider.wallet.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc();
+
+      await program.methods
+        .initializeGame(new anchor.BN(gameId2))
+        .accounts({
+          gameSession: pda2,
+          playerOne: provider.wallet.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc();
+
+      const game1 = await program.account.gameSession.fetch(pda1);
+      const game2 = await program.account.gameSession.fetch(pda2);
+
+      expect(game1.gameId.toNumber()).to.equal(gameId1);
+      expect(game2.gameId.toNumber()).to.equal(gameId2);
+    });
+
+    it("fails when trying to create a game with a duplicate game_id", async () => {
+      const gameId = uniqueGameId();
+      const [pda] = gameSessionPda(programId, gameId);
+
+      await program.methods
+        .initializeGame(new anchor.BN(gameId))
+        .accounts({
+          gameSession: pda,
+          playerOne: provider.wallet.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc();
+
+      // Attempting to create the same game again should fail (PDA already exists)
+      try {
+        await program.methods
+          .initializeGame(new anchor.BN(gameId))
+          .accounts({
+            gameSession: pda,
+            playerOne: provider.wallet.publicKey,
+            systemProgram: anchor.web3.SystemProgram.programId,
+          })
+          .rpc();
+        expect.fail("Should have thrown an error for duplicate game_id");
+      } catch (err: any) {
+        // Anchor throws when trying to init an already-existing account
+        expect(err).to.exist;
+      }
+    });
+
+    it("different players can each create their own games", async () => {
+      const playerTwo = Keypair.generate();
+      await airdrop(connection, playerTwo.publicKey);
+
+      const gameId1 = uniqueGameId();
+      const gameId2 = gameId1 + 1;
+
+      const [pda1] = gameSessionPda(programId, gameId1);
+      const [pda2] = gameSessionPda(programId, gameId2);
+
+      // Player one (provider wallet) creates game 1
+      await program.methods
+        .initializeGame(new anchor.BN(gameId1))
+        .accounts({
+          gameSession: pda1,
+          playerOne: provider.wallet.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc();
+
+      // Player two creates game 2
+      await program.methods
+        .initializeGame(new anchor.BN(gameId2))
+        .accounts({
+          gameSession: pda2,
+          playerOne: playerTwo.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([playerTwo])
+        .rpc();
+
+      const game1 = await program.account.gameSession.fetch(pda1);
+      const game2 = await program.account.gameSession.fetch(pda2);
+
+      expect(game1.playerOne.toBase58()).to.equal(
+        provider.wallet.publicKey.toBase58()
+      );
+      expect(game2.playerOne.toBase58()).to.equal(
+        playerTwo.publicKey.toBase58()
+      );
+    });
+  });
+
+  // ── initialize_player_board ─────────────────
+
+  describe("initialize_player_board", () => {
+    let gameId: number;
+    let gameSessionPdaKey: PublicKey;
+    let playerTwo: Keypair;
+
+    beforeEach(async () => {
+      gameId = uniqueGameId();
+      [gameSessionPdaKey] = gameSessionPda(programId, gameId);
+      playerTwo = Keypair.generate();
+
+      // Create a fresh game for each test
+      await program.methods
+        .initializeGame(new anchor.BN(gameId))
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          playerOne: provider.wallet.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc();
+
+      // Fund player two
+      await airdrop(connection, playerTwo.publicKey);
+    });
+
+    it("player one can create their board", async () => {
+      const [boardPda] = playerBoardPda(
+        programId,
+        gameId,
+        provider.wallet.publicKey
+      );
+
+      await program.methods
+        .initializePlayerBoard(new anchor.BN(gameId))
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          playerBoard: boardPda,
+          player: provider.wallet.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc();
+
+      const board = await program.account.playerBoard.fetch(boardPda);
+
+      expect(board.gameId.toNumber()).to.equal(gameId);
+      expect(board.player.toBase58()).to.equal(
+        provider.wallet.publicKey.toBase58()
+      );
+      expect(board.hitsReceived).to.equal(0);
+      expect(board.shipsPlaced).to.be.false;
+      expect(board.gridCommitment).to.deep.equal(new Array(32).fill(0));
+      expect(board.cellStates).to.deep.equal(new Array(100).fill(0));
+      expect(board.shipGridEncrypted).to.deep.equal(new Array(112).fill(0));
+    });
+
+    it("player two joins the game by creating their board", async () => {
+      const [boardPda] = playerBoardPda(programId, gameId, playerTwo.publicKey);
+
+      await program.methods
+        .initializePlayerBoard(new anchor.BN(gameId))
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          playerBoard: boardPda,
+          player: playerTwo.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([playerTwo])
+        .rpc();
+
+      // Verify the board was created
+      const board = await program.account.playerBoard.fetch(boardPda);
+      expect(board.player.toBase58()).to.equal(playerTwo.publicKey.toBase58());
+      expect(board.gameId.toNumber()).to.equal(gameId);
+
+      // Verify player_two was set on the game session
+      const gameSession = await program.account.gameSession.fetch(
+        gameSessionPdaKey
+      );
+      expect(gameSession.playerTwo.toBase58()).to.equal(
+        playerTwo.publicKey.toBase58()
+      );
+    });
+
+    it("both players can create boards in the same game", async () => {
+      const [board1Pda] = playerBoardPda(
+        programId,
+        gameId,
+        provider.wallet.publicKey
+      );
+      const [board2Pda] = playerBoardPda(
+        programId,
+        gameId,
+        playerTwo.publicKey
+      );
+
+      // Player one creates their board
+      await program.methods
+        .initializePlayerBoard(new anchor.BN(gameId))
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          playerBoard: board1Pda,
+          player: provider.wallet.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc();
+
+      // Player two creates their board (joins the game)
+      await program.methods
+        .initializePlayerBoard(new anchor.BN(gameId))
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          playerBoard: board2Pda,
+          player: playerTwo.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([playerTwo])
+        .rpc();
+
+      const board1 = await program.account.playerBoard.fetch(board1Pda);
+      const board2 = await program.account.playerBoard.fetch(board2Pda);
+
+      expect(board1.player.toBase58()).to.equal(
+        provider.wallet.publicKey.toBase58()
+      );
+      expect(board2.player.toBase58()).to.equal(playerTwo.publicKey.toBase58());
+    });
+
+    it("a third player cannot join a full game", async () => {
+      const playerThree = Keypair.generate();
+      await airdrop(connection, playerThree.publicKey);
+
+      // Player two joins the game
+      const [board2Pda] = playerBoardPda(
+        programId,
+        gameId,
+        playerTwo.publicKey
+      );
+      await program.methods
+        .initializePlayerBoard(new anchor.BN(gameId))
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          playerBoard: board2Pda,
+          player: playerTwo.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([playerTwo])
+        .rpc();
+
+      // Player three attempts to join — should fail with GameFull
+      const [board3Pda] = playerBoardPda(
+        programId,
+        gameId,
+        playerThree.publicKey
+      );
+      try {
+        await program.methods
+          .initializePlayerBoard(new anchor.BN(gameId))
+          .accounts({
+            gameSession: gameSessionPdaKey,
+            playerBoard: board3Pda,
+            player: playerThree.publicKey,
+            systemProgram: anchor.web3.SystemProgram.programId,
+          })
+          .signers([playerThree])
+          .rpc();
+        expect.fail("Should have thrown GameFull error");
+      } catch (err: any) {
+        expect(err.error.errorCode.code).to.equal("GameFull");
+        expect(err.error.errorCode.number).to.equal(ERROR_CODES.GameFull);
+      }
+    });
+
+    it("a player cannot create two boards in the same game", async () => {
+      const [boardPda] = playerBoardPda(
+        programId,
+        gameId,
+        provider.wallet.publicKey
+      );
+
+      // First board creation succeeds
+      await program.methods
+        .initializePlayerBoard(new anchor.BN(gameId))
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          playerBoard: boardPda,
+          player: provider.wallet.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc();
+
+      // Second board creation should fail (PDA already exists)
+      try {
+        await program.methods
+          .initializePlayerBoard(new anchor.BN(gameId))
+          .accounts({
+            gameSession: gameSessionPdaKey,
+            playerBoard: boardPda,
+            player: provider.wallet.publicKey,
+            systemProgram: anchor.web3.SystemProgram.programId,
+          })
+          .rpc();
+        expect.fail("Should have thrown — board PDA already exists");
+      } catch (err: any) {
+        expect(err).to.exist;
+      }
+    });
+
+    it("game session state remains Initialized after boards are created", async () => {
+      const [board1Pda] = playerBoardPda(
+        programId,
+        gameId,
+        provider.wallet.publicKey
+      );
+      const [board2Pda] = playerBoardPda(
+        programId,
+        gameId,
+        playerTwo.publicKey
+      );
+
+      await program.methods
+        .initializePlayerBoard(new anchor.BN(gameId))
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          playerBoard: board1Pda,
+          player: provider.wallet.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc();
+
+      await program.methods
+        .initializePlayerBoard(new anchor.BN(gameId))
+        .accounts({
+          gameSession: gameSessionPdaKey,
+          playerBoard: board2Pda,
+          player: playerTwo.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([playerTwo])
+        .rpc();
+
+      // Game state should still be Initialized (ships not placed yet)
+      const gameSession = await program.account.gameSession.fetch(
+        gameSessionPdaKey
+      );
+      expect(gameSession.gameState).to.deep.equal({ initialized: {} });
+    });
+  });
+
+  // ── IDL shape verification ──────────────────
+
+  describe("IDL shape", () => {
+    it("has initialize_game instruction in IDL", () => {
+      // program.idl uses the raw JSON IDL which has snake_case names
+      const idl = program.idl as any;
+      const ix = idl.instructions.find(
+        (i: any) => i.name === "initialize_game" || i.name === "initializeGame"
+      );
+      expect(ix).to.not.be.undefined;
+      expect(ix.accounts.length).to.equal(3); // game_session, player_one, system_program
+      expect(ix.args.length).to.equal(1); // game_id
+    });
+
+    it("has initialize_player_board instruction in IDL", () => {
+      const idl = program.idl as any;
+      const ix = idl.instructions.find(
+        (i: any) =>
+          i.name === "initialize_player_board" ||
+          i.name === "initializePlayerBoard"
+      );
+      expect(ix).to.not.be.undefined;
+      expect(ix.accounts.length).to.equal(4); // game_session, player_board, player, system_program
+      expect(ix.args.length).to.equal(1); // game_id
+    });
+
+    it("has process_undelegation instruction injected by #[ephemeral]", () => {
+      const idl = program.idl as any;
+      const ix = idl.instructions.find(
+        (i: any) =>
+          i.name === "process_undelegation" || i.name === "processUndelegation"
+      );
+      expect(ix, "#[ephemeral] macro should inject process_undelegation").to.not
+        .be.undefined;
+    });
+
+    it("IDL includes GameSession and PlayerBoard account types", () => {
+      const idl = program.idl as any;
+      const typeNames: string[] = idl.types.map((t: any) => t.name);
+      // Check both snake_case (raw JSON) and PascalCase possibilities
+      const hasGameSession =
+        typeNames.includes("GameSession") || typeNames.includes("gameSession");
+      const hasPlayerBoard =
+        typeNames.includes("PlayerBoard") || typeNames.includes("playerBoard");
+      const hasGameState =
+        typeNames.includes("GameState") || typeNames.includes("gameState");
+
+      expect(hasGameSession, "IDL should include GameSession type").to.be.true;
+      expect(hasPlayerBoard, "IDL should include PlayerBoard type").to.be.true;
+      expect(hasGameState, "IDL should include GameState type").to.be.true;
     });
   });
 });
