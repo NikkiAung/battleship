@@ -290,11 +290,10 @@ export const useGameSession = () => {
     [l1Program, publicKey, getPlayerBoardPda, fetchPlayerBoard]
   );
 
-  // 4. start game + delegate to ER
+  // 4. start game — transitions Initialized → InProgress on L1
   const startGame = useCallback(
     async (gameId: BN) => {
-      if (!l1Program || !publicKey || !signTransaction)
-        throw new Error("wallet not connected");
+      if (!l1Program || !publicKey) throw new Error("wallet not connected");
       patch({ isLoading: true, error: null });
 
       try {
@@ -305,7 +304,6 @@ export const useGameSession = () => {
         const [boardOnePda] = getPlayerBoardPda(gameId, session.playerOne);
         const [boardTwoPda] = getPlayerBoardPda(gameId, session.playerTwo);
 
-        // transition Initialized → InProgress
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await (l1Program.methods as any)
           .startGame(gameId)
@@ -316,38 +314,13 @@ export const useGameSession = () => {
           })
           .rpc(RPC_OPTS);
 
-        // delegate all accounts to ER for fast gameplay
-        try {
-          await delegateGameSession(l1Program, publicKey, gameId);
-          await delegatePlayerBoard(
-            l1Connection,
-            publicKey,
-            gameId,
-            session.playerOne,
-            signTransaction
-          );
-          await delegatePlayerBoard(
-            l1Connection,
-            publicKey,
-            gameId,
-            session.playerTwo,
-            signTransaction
-          );
-          patch({ isDelegated: true });
-          console.log("delegation complete, gameplay in ER");
-
-          // authenticate with TEE for verified ER operations
-          if (signMessage) {
-            authenticateWithTee(publicKey, signMessage).catch((err) =>
-              console.warn("tee auth failed (non-fatal):", err)
-            );
-          }
-        } catch (err) {
-          console.warn("delegation failed, playing on L1:", err);
-        }
-
         const updated = await fetchGameSession(gameId);
         patch({ gameSession: updated, isLoading: false });
+
+        // delegate to ER in the background (non-blocking)
+        delegateToER(gameId, session).catch((err) =>
+          console.warn("delegation failed, playing on L1:", err)
+        );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         patch({ error: msg, isLoading: false });
@@ -357,15 +330,48 @@ export const useGameSession = () => {
     [
       l1Program,
       publicKey,
-      signTransaction,
-      signMessage,
-      magicConnection,
       state.gameSession,
       getGameSessionPda,
       getPlayerBoardPda,
       fetchGameSession,
     ]
   );
+
+  // 4b. delegate all accounts to ER (non-blocking, called after startGame)
+  const delegateToER = async (gameId: BN, session: GameSession) => {
+    if (!l1Program || !publicKey || !signTransaction) return;
+
+    try {
+      await delegateGameSession(l1Program, publicKey, gameId);
+      await delegatePlayerBoard(
+        l1Connection,
+        publicKey,
+        gameId,
+        session.playerOne,
+        signTransaction
+      );
+      if (session.playerTwo) {
+        await delegatePlayerBoard(
+          l1Connection,
+          publicKey,
+          gameId,
+          session.playerTwo,
+          signTransaction
+        );
+      }
+      patch({ isDelegated: true });
+      console.log("delegation complete, gameplay in ER");
+
+      // tee auth in background
+      if (signMessage) {
+        authenticateWithTee(publicKey, signMessage).catch((err) =>
+          console.warn("tee auth failed (non-fatal):", err)
+        );
+      }
+    } catch (err) {
+      console.warn("delegation failed, playing on L1:", err);
+    }
+  };
 
   // 5. process attack — uses erProgram (MagicRouter routes to ER if delegated)
   const processAttack = useCallback(
