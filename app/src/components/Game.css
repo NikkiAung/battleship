@@ -90,3 +90,19 @@
   color: #e67e22;
   font-weight: bold;
 }
+
+.start-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.error-text {
+  color: #e74c3c !important;
+  font-size: 14px;
+  max-width: 400px;
+  text-align: center;
+  word-break: break-word;
+}

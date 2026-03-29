@@ -1,4 +1,4 @@
-import { type FC, useEffect } from "react";
+import { type FC, useEffect, useState } from "react";
 import { BN } from "@coral-xyz/anchor";
 import { GameLobby } from "./GameLobby";
 import { ShipPlacement } from "./ShipPlacement";
@@ -9,59 +9,20 @@ import "./Game.css";
 
 type GamePhase = "lobby" | "placement" | "waiting" | "battle" | "finished";
 
-// main game component — orchestrates all phases
 export const Game: FC = () => {
   const gs = useGameSession();
+  const [startError, setStartError] = useState<string | null>(null);
 
-  // derive ui phase from on-chain state
   const derivePhase = (): GamePhase => {
     if (!gs.gameId || !gs.gameSession) return "lobby";
     if (gs.gameStateIs("finished")) return "finished";
     if (gs.gameStateIs("inProgress")) return "battle";
-    // both placed but not yet InProgress
     if (gs.bothShipsPlaced()) return "waiting";
-    // own ships not placed yet
     if (!gs.ownBoard?.shipsPlaced) return "placement";
-    // own ships placed, waiting for opponent
     return "waiting";
   };
 
   const phase = derivePhase();
-
-  // auto-start game when both players placed ships and game is still Initialized
-  useEffect(() => {
-    const conditions = {
-      phase,
-      bothPlaced: gs.bothShipsPlaced(),
-      hasGameId: !!gs.gameId,
-      isInitialized: gs.gameStateIs("initialized"),
-      notLoading: !gs.isLoading,
-      hasPublicKey: !!gs.publicKey,
-      isPlayerOne: gs.gameSession?.playerOne
-        ? gs.publicKey?.equals(gs.gameSession.playerOne)
-        : false,
-    };
-    console.log("auto-start conditions:", conditions);
-
-    if (
-      conditions.phase === "waiting" &&
-      conditions.bothPlaced &&
-      conditions.hasGameId &&
-      conditions.isInitialized &&
-      conditions.notLoading &&
-      conditions.hasPublicKey &&
-      conditions.isPlayerOne
-    ) {
-      console.log("triggering startGame...");
-      gs.startGame(gs.gameId!).catch(console.error);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    phase,
-    gs.gameSession,
-    gs.ownBoard?.shipsPlaced,
-    gs.opponentBoard?.shipsPlaced,
-  ]);
 
   // auto-check winner after each attack
   useEffect(() => {
@@ -82,8 +43,6 @@ export const Game: FC = () => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, gs.isDelegated]);
-
-  // ---- handlers ----
 
   const handleCreateGame = async () => {
     try {
@@ -117,9 +76,20 @@ export const Game: FC = () => {
   };
 
   const handleReady = async () => {
-    // ships are already on-chain from autoPlaceShips
-    // start_game triggers automatically via the effect when both players ready
     console.log("ships confirmed, waiting for opponent...");
+  };
+
+  // player one clicks this to start the game
+  const handleStartGame = async () => {
+    if (!gs.gameId) return;
+    setStartError(null);
+    try {
+      await gs.startGame(gs.gameId);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("start game failed:", msg, err);
+      setStartError(msg);
+    }
   };
 
   const handleAttack = async (cellIndex: number) => {
@@ -145,11 +115,17 @@ export const Game: FC = () => {
 
   const handleBackToLobby = () => {
     gs.reset();
+    setStartError(null);
   };
 
   const gameIdHex = gs.gameId
     ? Buffer.from(gs.gameId.toArray("le", 8)).toString("hex")
     : null;
+
+  const isPlayerOne =
+    gs.publicKey && gs.gameSession?.playerOne
+      ? gs.publicKey.equals(gs.gameSession.playerOne)
+      : false;
 
   return (
     <div className="game">
@@ -175,14 +151,36 @@ export const Game: FC = () => {
 
       {phase === "waiting" && (
         <div className="waiting-screen">
-          <h2>Waiting for opponent...</h2>
-          <p>Share this Game ID with your opponent:</p>
+          <h2>
+            {gs.bothShipsPlaced()
+              ? "Both players ready!"
+              : "Waiting for opponent..."}
+          </h2>
+
+          <p>Game ID (share with opponent):</p>
           <code className="game-id-code">{gameIdHex}</code>
-          {gs.bothShipsPlaced() && gs.gameStateIs("initialized") && (
-            <p className="ready-text">Both players ready! Starting game...</p>
+
+          {gs.bothShipsPlaced() && isPlayerOne && (
+            <div className="start-section">
+              <button
+                className="btn btn-primary"
+                onClick={handleStartGame}
+                disabled={gs.isLoading}
+              >
+                {gs.isLoading ? "Starting..." : "Start Game"}
+              </button>
+              {startError && <p className="error-text">{startError}</p>}
+            </div>
           )}
+
+          {gs.bothShipsPlaced() && !isPlayerOne && (
+            <p className="ready-text">
+              Waiting for player one to start the game...
+            </p>
+          )}
+
           {gs.isDelegated && (
-            <p className="ready-text">Playing in Ephemeral Rollup</p>
+            <p className="ready-text">Delegated to Ephemeral Rollup</p>
           )}
         </div>
       )}
