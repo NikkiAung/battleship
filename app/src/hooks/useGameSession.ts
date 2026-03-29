@@ -70,11 +70,11 @@ export const useGameSession = () => {
     setState((s) => ({ ...s, ...p }));
 
   // ---------- fetch helpers ----------
-  // prefer erProgram (MagicRouter routes to ER if delegated), fallback to l1Program
+  // use l1Program when not delegated, erProgram (MagicRouter) when delegated
 
   const fetchGameSession = useCallback(
     async (gameId: BN): Promise<GameSession | null> => {
-      const prog = erProgram || l1Program;
+      const prog = state.isDelegated ? erProgram : l1Program;
       if (!prog) return null;
       try {
         const [pda] = getGameSessionPda(gameId);
@@ -82,16 +82,17 @@ export const useGameSession = () => {
         return (await (prog.account as any).gameSession.fetch(
           pda
         )) as GameSession;
-      } catch {
+      } catch (err) {
+        console.warn("fetchGameSession failed:", err);
         return null;
       }
     },
-    [erProgram, l1Program, getGameSessionPda]
+    [state.isDelegated, erProgram, l1Program, getGameSessionPda]
   );
 
   const fetchPlayerBoard = useCallback(
     async (gameId: BN, player: PublicKey): Promise<PlayerBoard | null> => {
-      const prog = erProgram || l1Program;
+      const prog = state.isDelegated ? erProgram : l1Program;
       if (!prog) return null;
       try {
         const [pda] = getPlayerBoardPda(gameId, player);
@@ -99,11 +100,12 @@ export const useGameSession = () => {
         return (await (prog.account as any).playerBoard.fetch(
           pda
         )) as PlayerBoard;
-      } catch {
+      } catch (err) {
+        console.warn("fetchPlayerBoard failed:", err);
         return null;
       }
     },
-    [erProgram, l1Program, getPlayerBoardPda]
+    [state.isDelegated, erProgram, l1Program, getPlayerBoardPda]
   );
 
   // ---------- polling ----------
@@ -304,8 +306,9 @@ export const useGameSession = () => {
         const [boardOnePda] = getPlayerBoardPda(gameId, session.playerOne);
         const [boardTwoPda] = getPlayerBoardPda(gameId, session.playerTwo);
 
+        console.log("calling start_game on L1...");
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (l1Program.methods as any)
+        const sig = await (l1Program.methods as any)
           .startGame(gameId)
           .accounts({
             gameSession: gameSessionPda,
@@ -313,8 +316,10 @@ export const useGameSession = () => {
             boardTwo: boardTwoPda,
           })
           .rpc(RPC_OPTS);
+        console.log("start_game succeeded, sig:", sig);
 
         const updated = await fetchGameSession(gameId);
+        console.log("game state after start:", updated?.gameState);
         patch({ gameSession: updated, isLoading: false });
 
         // delegate to ER in the background (non-blocking)

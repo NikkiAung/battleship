@@ -30,16 +30,30 @@ export const Game: FC = () => {
 
   // auto-start game when both players placed ships and game is still Initialized
   useEffect(() => {
+    const conditions = {
+      phase,
+      bothPlaced: gs.bothShipsPlaced(),
+      hasGameId: !!gs.gameId,
+      isInitialized: gs.gameStateIs("initialized"),
+      notLoading: !gs.isLoading,
+      hasPublicKey: !!gs.publicKey,
+      isPlayerOne: gs.gameSession?.playerOne
+        ? gs.publicKey?.equals(gs.gameSession.playerOne)
+        : false,
+    };
+    console.log("auto-start conditions:", conditions);
+
     if (
-      phase === "waiting" &&
-      gs.bothShipsPlaced() &&
-      gs.gameId &&
-      gs.gameStateIs("initialized") &&
-      !gs.isLoading &&
-      gs.publicKey &&
-      gs.gameSession?.playerOne.equals(gs.publicKey)
+      conditions.phase === "waiting" &&
+      conditions.bothPlaced &&
+      conditions.hasGameId &&
+      conditions.isInitialized &&
+      conditions.notLoading &&
+      conditions.hasPublicKey &&
+      conditions.isPlayerOne
     ) {
-      gs.startGame(gs.gameId).catch(console.error);
+      console.log("triggering startGame...");
+      gs.startGame(gs.gameId!).catch(console.error);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
