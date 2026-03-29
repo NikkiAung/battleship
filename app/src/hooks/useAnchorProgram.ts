@@ -47,10 +47,15 @@ export const useAnchorProgram = () => {
   // magic router provider + program for gameplay (after delegation)
   const erProvider = useMemo(() => {
     if (!wallet) return null;
-    return new AnchorProvider(magicConnection, wallet, {
-      commitment: "confirmed",
-      skipPreflight: true,
-    });
+    // cast needed: ConnectionMagicRouter extends Connection from a different web3.js version
+    return new AnchorProvider(
+      magicConnection as unknown as Connection,
+      wallet,
+      {
+        commitment: "confirmed",
+        skipPreflight: true,
+      }
+    );
   }, [magicConnection, wallet]);
 
   const erProgram = useMemo(() => {

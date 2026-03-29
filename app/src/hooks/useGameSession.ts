@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BN } from "@coral-xyz/anchor";
-import { PublicKey, SystemProgram } from "@solana/web3.js";
+import { Connection, PublicKey, SystemProgram } from "@solana/web3.js";
 import { useAnchorProgram } from "./useAnchorProgram";
 import { useSolanaWallet } from "./useSolanaWallet";
 import {
@@ -486,7 +486,7 @@ export const useGameSession = () => {
 
       if (opponentKey) {
         await commitAndUndelegateAll(
-          magicConnection,
+          magicConnection as unknown as Connection,
           publicKey,
           state.gameId,
           session.playerOne,
